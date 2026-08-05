@@ -124,7 +124,7 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 	if chord.RootPitchClass > 11 {
 		return Chord{}, false
 	}
-	chord.Scale = uint16(chord.Attributes) == 0x2000
+	chord.Scale = chord.Attributes&0x80 == 0
 	if chord.Scale {
 		chord.ScaleMask = uint16(chord.Attributes>>16) & 0x0fff
 	}

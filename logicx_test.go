@@ -139,8 +139,8 @@ func TestParseProjectData_ProjectChordsMatchMarkerOracle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(project.ProjectChords) != 46 {
-		t.Fatalf("project chords = %d, want 46", len(project.ProjectChords))
+	if len(project.ProjectChords) != 47 {
+		t.Fatalf("project chords = %d, want 47", len(project.ProjectChords))
 	}
 	markers := make(map[uint32]string, len(project.Markers))
 	for _, marker := range project.Markers {
@@ -167,8 +167,9 @@ func TestParseProjectData_ProjectChordsMatchMarkerOracle(t *testing.T) {
 		t.Fatalf("no chord = %+v", noChord)
 	}
 	last := project.ProjectChords[len(project.ProjectChords)-1]
-	if last.Name != "C half-whole diminished" || !last.Scale || last.ScaleMask != 0x06db ||
-		last.Attributes != 0x06db2000 || !slices.Equal(last.Pitches, []uint8{60, 61, 63, 64, 66, 67, 69, 70}) {
+	if last.Name != "Fb mixolydian #11" || !last.Scale || last.ScaleMask != 0x06d5 ||
+		last.RootPitchClass != 4 || last.RootSpelling != 1 || last.Attributes != 0x06d51400 ||
+		!slices.Equal(last.Pitches, []uint8{64, 66, 68, 70, 71, 73, 74}) {
 		t.Fatalf("last scale = %+v", last)
 	}
 }
