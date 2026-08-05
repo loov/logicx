@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"regexp"
 	"strings"
+
+	"github.com/egonelbre/logicx/internal/record"
 )
 
 // MIDISequence is a named event sequence discovered in ProjectData. Logic's
@@ -68,23 +70,24 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 }
 
 func findMIDINotes(data []byte) []MIDINote {
-	var notes []MIDINote
-	for offset := 0; offset+32 <= len(data); offset += 16 {
-		record := data[offset : offset+32]
-		if record[0] != 0x90 || !bytes.Equal(record[10:12], []byte("AP")) || record[12] > 127 {
-			continue
-		}
-		var raw [32]byte
-		copy(raw[:], record)
-		notes = append(notes, MIDINote{
-			PositionFraction: binary.LittleEndian.Uint16(record[2:4]),
-			Position:         binary.LittleEndian.Uint32(record[4:8]),
-			Pitch:            record[12],
-			Duration:         binary.LittleEndian.Uint32(record[28:32]),
-			Raw:              raw,
-		})
+	return record.Scan(data, 32, 16, decodeMIDINote)
+}
+
+func decodeMIDINote(data []byte) (MIDINote, bool) {
+	var note MIDINote
+	ok := record.Decode(data,
+		record.Equal(0, 0x90),
+		record.Uint16LE(2, &note.PositionFraction),
+		record.Uint32LE(4, &note.Position),
+		record.Equal(10, 'A', 'P'),
+		record.Uint8(12, &note.Pitch),
+		record.Uint32LE(28, &note.Duration),
+		record.Copy(0, note.Raw[:]),
+	)
+	if !ok || note.Pitch > 127 {
+		return MIDINote{}, false
 	}
-	return notes
+	return note, true
 }
 
 func sequenceName(data []byte) string {
@@ -99,7 +102,8 @@ func findMarkers(chunks []Chunk) []Marker {
 	texts := make(map[uint32]string)
 	for _, chunk := range chunks {
 		if chunk.Type == "TxSq" {
-			texts[binary.LittleEndian.Uint32(chunk.Header[10:14])] = markerRTF(chunk.Data)
+			textID := binary.LittleEndian.Uint32(chunk.Header[10:14])
+			texts[textID] = markerRTF(chunk.Data)
 		}
 	}
 
@@ -108,23 +112,31 @@ func findMarkers(chunks []Chunk) []Marker {
 		if chunk.Type != "EvSq" {
 			continue
 		}
-		for offset := 0; offset+48 <= len(chunk.Data); offset += 16 {
-			record := chunk.Data[offset : offset+48]
-			textID := binary.LittleEndian.Uint32(record[16:20])
-			rtf, ok := texts[textID]
-			if !ok || binary.LittleEndian.Uint32(record[:4]) != 0x12 || binary.LittleEndian.Uint32(record[20:24]) != 0x88000000 {
-				continue
-			}
-			var raw [48]byte
-			copy(raw[:], record)
-			markers = append(markers, Marker{
-				Position: binary.LittleEndian.Uint32(record[4:8]),
-				Length:   binary.LittleEndian.Uint32(record[28:32]),
-				TextID:   textID, Name: plainRTF(rtf), RTF: rtf, Raw: raw,
-			})
-		}
+		markers = append(markers, record.Scan(chunk.Data, 48, 16, markerDecoder(texts))...)
 	}
 	return markers
+}
+
+func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
+	return func(data []byte) (Marker, bool) {
+		var marker Marker
+		if !record.Decode(data,
+			record.Equal(0, 0x12, 0, 0, 0),
+			record.Uint32LE(4, &marker.Position),
+			record.Uint32LE(16, &marker.TextID),
+			record.Equal(20, 0, 0, 0, 0x88),
+			record.Uint32LE(28, &marker.Length),
+			record.Copy(0, marker.Raw[:]),
+		) {
+			return Marker{}, false
+		}
+		rtf, ok := texts[marker.TextID]
+		if !ok {
+			return Marker{}, false
+		}
+		marker.Name, marker.RTF = plainRTF(rtf), rtf
+		return marker, true
+	}
 }
 
 func markerRTF(data []byte) string {
