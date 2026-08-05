@@ -207,7 +207,7 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			Placement: "above", Type: xmlDirectionType{Rehearsal: marker.Name}, Offset: &offset,
 		})
 	}
-	chordMeasures := make(map[int][]xmlDirection)
+	chordMeasures := make(map[int][]xmlHarmony)
 	for _, chord := range sequence.Chords {
 		if chord.Name == "" {
 			continue
@@ -218,9 +218,7 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			byMeasure = append(byMeasure, nil)
 		}
 		offset := position % measureTicks
-		chordMeasures[measure] = append(chordMeasures[measure], xmlDirection{
-			Placement: "above", Type: xmlDirectionType{Words: chord.Name}, Offset: &offset,
-		})
+		chordMeasures[measure] = append(chordMeasures[measure], makeHarmony(chord, offset))
 	}
 	if len(byMeasure) == 0 {
 		byMeasure = append(byMeasure, nil)
@@ -253,11 +251,121 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			}
 		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
-		measure.Directions = append(measure.Directions, chordMeasures[i]...)
+		measure.Harmonies = append(measure.Harmonies, chordMeasures[i]...)
 		measure.Items = measureItems(notes)
 		part.Measures = append(part.Measures, measure)
 	}
 	return part
+}
+
+type musicXMLChordKind struct {
+	Name         string
+	IntervalMask uint16
+}
+
+// MusicXML 4.0 kind-value table. Functional kinds that share pitch sets with
+// pop chords are retained here but are not inferred from a mask alone.
+var musicXMLChordKinds = [...]musicXMLChordKind{
+	{"augmented", 0x111}, {"augmented-seventh", 0x511},
+	{"diminished", 0x049}, {"diminished-seventh", 0x249},
+	{"dominant", 0x491}, {"dominant-11th", 0x4b5},
+	{"dominant-13th", 0x6b5}, {"dominant-ninth", 0x495},
+	{"French", 0x451}, {"German", 0x491}, {"half-diminished", 0x449},
+	{"Italian", 0x411}, {"major", 0x091}, {"major-11th", 0x8b5},
+	{"major-13th", 0xab5}, {"major-minor", 0x889},
+	{"major-ninth", 0x895}, {"major-seventh", 0x891},
+	{"major-sixth", 0x291}, {"minor", 0x089}, {"minor-11th", 0x4ad},
+	{"minor-13th", 0x6ad}, {"minor-ninth", 0x48d},
+	{"minor-seventh", 0x489}, {"minor-sixth", 0x289},
+	{"Neapolitan", 0x091}, {"none", 0}, {"other", 0}, {"pedal", 0x001},
+	{"power", 0x081}, {"suspended-fourth", 0x0a1},
+	{"suspended-second", 0x085}, {"Tristan", 0x449},
+}
+
+func makeHarmony(chord logicx.Chord, offset uint32) xmlHarmony {
+	if chord.NoChord {
+		empty := ""
+		return xmlHarmony{
+			Placement: "above", Root: xmlHarmonyRoot{Step: xmlHarmonyStep{Value: "C", Text: &empty}},
+			Kind: xmlHarmonyKind{Value: "none"}, Offset: offset,
+		}
+	}
+	rootStep, rootAlter, rootName := harmonyPitch(chord.RootPitchClass, chord.RootSpelling)
+	kind := harmonyKind(chord)
+	harmony := xmlHarmony{
+		Placement: "above",
+		Root:      xmlHarmonyRoot{Step: xmlHarmonyStep{Value: rootStep}, Alter: rootAlter},
+		Kind:      xmlHarmonyKind{Value: kind},
+		Offset:    offset,
+	}
+	if chord.HasBass {
+		bassStep, bassAlter, bassName := harmonyPitch(chord.BassPitchClass, chord.BassSpelling)
+		harmony.Bass = &xmlHarmonyBass{Step: bassStep, Alter: bassAlter}
+		chord.Name = strings.TrimSuffix(chord.Name, "/"+bassName)
+	}
+	if kind == "other" {
+		harmony.Kind.Text = strings.TrimSpace(strings.TrimPrefix(chord.Name, rootName))
+		harmony.Degrees = harmonyDegrees(chord)
+	}
+	return harmony
+}
+
+func harmonyKind(chord logicx.Chord) string {
+	if chord.Scale {
+		return "other"
+	}
+	for _, kind := range musicXMLChordKinds {
+		switch kind.Name {
+		case "French", "German", "Italian", "Neapolitan", "Tristan", "none", "other", "pedal":
+			continue
+		}
+		if kind.IntervalMask == chord.IntervalMask {
+			return kind.Name
+		}
+	}
+	return "other"
+}
+
+func harmonyPitch(pitch, spelling uint8) (step string, alter *int, name string) {
+	naturals := [...]string{"C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"}
+	switch spelling {
+	case 1:
+		step, name = naturals[(pitch+1)%12], naturals[(pitch+1)%12]+"b"
+		value := -1
+		return step, &value, name
+	case 3:
+		step, name = naturals[(pitch+11)%12], naturals[(pitch+11)%12]+"#"
+		value := 1
+		return step, &value, name
+	default:
+		return naturals[pitch], nil, naturals[pitch]
+	}
+}
+
+func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
+	table := [...]struct{ value, alter int }{
+		{}, {9, -1}, {9, 0}, {3, -1}, {3, 0}, {11, 0},
+		{5, -1}, {5, 0}, {13, -1}, {13, 0}, {7, -1}, {7, 0},
+	}
+	mask := chord.IntervalMask
+	if chord.Scale {
+		mask = chord.ScaleMask
+	}
+	var degrees []xmlHarmonyDegree
+	for interval := 1; interval < len(table); interval++ {
+		if mask&(1<<interval) == 0 {
+			continue
+		}
+		degree := table[interval]
+		if interval == 3 && strings.Contains(chord.Name, "#9") {
+			degree.value, degree.alter = 9, 1
+		}
+		if interval == 6 && strings.Contains(chord.Name, "#11") {
+			degree.value, degree.alter = 11, 1
+		}
+		degrees = append(degrees, xmlHarmonyDegree{Value: degree.value, Alter: degree.alter, Type: "add"})
+	}
+	return degrees
 }
 
 func measureItems(notes []noteSegment) []xmlMeasureItem {
@@ -334,7 +442,43 @@ type xmlMeasure struct {
 	Number     int              `xml:"number,attr"`
 	Attributes *xmlAttributes   `xml:"attributes,omitempty"`
 	Directions []xmlDirection   `xml:"direction,omitempty"`
+	Harmonies  []xmlHarmony     `xml:"harmony,omitempty"`
 	Items      []xmlMeasureItem `xml:",any"`
+}
+
+type xmlHarmony struct {
+	Placement string             `xml:"placement,attr,omitempty"`
+	Root      xmlHarmonyRoot     `xml:"root"`
+	Kind      xmlHarmonyKind     `xml:"kind"`
+	Bass      *xmlHarmonyBass    `xml:"bass,omitempty"`
+	Degrees   []xmlHarmonyDegree `xml:"degree,omitempty"`
+	Offset    uint32             `xml:"offset"`
+}
+
+type xmlHarmonyRoot struct {
+	Step  xmlHarmonyStep `xml:"root-step"`
+	Alter *int           `xml:"root-alter,omitempty"`
+}
+
+type xmlHarmonyStep struct {
+	Value string  `xml:",chardata"`
+	Text  *string `xml:"text,attr,omitempty"`
+}
+
+type xmlHarmonyKind struct {
+	Value string `xml:",chardata"`
+	Text  string `xml:"text,attr,omitempty"`
+}
+
+type xmlHarmonyBass struct {
+	Step  string `xml:"bass-step"`
+	Alter *int   `xml:"bass-alter,omitempty"`
+}
+
+type xmlHarmonyDegree struct {
+	Value int    `xml:"degree-value"`
+	Alter int    `xml:"degree-alter"`
+	Type  string `xml:"degree-type"`
 }
 
 type xmlAttributes struct {
@@ -379,6 +523,17 @@ type xmlMeasureItem struct {
 	Forward *xmlMove `xml:"forward,omitempty"`
 	Backup  *xmlMove `xml:"backup,omitempty"`
 	Note    *xmlNote `xml:"note,omitempty"`
+}
+
+func (item xmlMeasureItem) MarshalXML(encoder *xml.Encoder, _ xml.StartElement) error {
+	switch {
+	case item.Forward != nil:
+		return encoder.EncodeElement(item.Forward, xml.StartElement{Name: xml.Name{Local: "forward"}})
+	case item.Backup != nil:
+		return encoder.EncodeElement(item.Backup, xml.StartElement{Name: xml.Name{Local: "backup"}})
+	default:
+		return encoder.EncodeElement(item.Note, xml.StartElement{Name: xml.Name{Local: "note"}})
+	}
 }
 
 type xmlMove struct {

@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"howett.net/plist"
@@ -126,6 +127,49 @@ func TestParseProjectData_ParsesMarkers(t *testing.T) {
 	marker := project.Markers[0]
 	if marker.Position != 38_400 || marker.Length != 7_680 || marker.TextID != 4 || marker.Name != "Chorus" || marker.RTF == "" {
 		t.Fatalf("marker = %+v", marker)
+	}
+}
+
+func TestParseProjectData_ProjectChordsMatchMarkerOracle(t *testing.T) {
+	data, err := os.ReadFile("testdata/chords.logicx/Alternatives/000/ProjectData")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := ParseProjectData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(project.ProjectChords) != 46 {
+		t.Fatalf("project chords = %d, want 46", len(project.ProjectChords))
+	}
+	markers := make(map[uint32]string, len(project.Markers))
+	for _, marker := range project.Markers {
+		markers[marker.Position] = marker.Name
+	}
+	for _, chord := range project.ProjectChords {
+		if got := markers[chord.Position]; got != chord.Name {
+			t.Errorf("chord at %d = %q, marker = %q", chord.Position, chord.Name, got)
+		}
+	}
+	first := project.ProjectChords[0]
+	if first.Position != 38_400 || first.Duration != 3_840 || first.SequenceID != 28 ||
+		first.IntervalMask != 0x091 || first.RootPitchClass != 0 || first.RootSpelling != 2 ||
+		!slices.Equal(first.Pitches, []uint8{60, 64, 67}) || len(first.Raw) != 32 {
+		t.Fatalf("first chord = %+v", first)
+	}
+	slash := project.ProjectChords[26]
+	if slash.Name != "C/E" || !slash.HasBass || slash.BassPitchClass != 4 || slash.BassSpelling != 2 ||
+		!slices.Equal(slash.Pitches, []uint8{52, 60, 64, 67}) {
+		t.Fatalf("slash chord = %+v", slash)
+	}
+	noChord := project.ProjectChords[37]
+	if noChord.Name != "no chord" || !noChord.NoChord || noChord.IntervalMask != 0 || len(noChord.Pitches) != 0 {
+		t.Fatalf("no chord = %+v", noChord)
+	}
+	last := project.ProjectChords[len(project.ProjectChords)-1]
+	if last.Name != "C half-whole diminished" || !last.Scale || last.ScaleMask != 0x06db ||
+		last.Attributes != 0x06db2000 || !slices.Equal(last.Pitches, []uint8{60, 61, 63, 64, 66, 67, 69, 70}) {
+		t.Fatalf("last scale = %+v", last)
 	}
 }
 

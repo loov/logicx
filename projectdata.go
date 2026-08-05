@@ -41,6 +41,7 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	p := ProjectData{
 		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(data),
 		Tracks: findTracks(data), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
+		ProjectChords: findProjectChords(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
 	return p, nil

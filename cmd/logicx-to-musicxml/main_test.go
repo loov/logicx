@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -56,6 +57,7 @@ func TestWriteMusicXML_ProjectChordsGetSeparateStaff(t *testing.T) {
 		Metadata: logicx.Metadata{Key: "C", Mode: "major", TimeSignature: [2]uint64{4, 4}},
 		Project: logicx.ProjectData{ProjectChords: []logicx.Chord{{
 			Position: logicBarOneTick, Duration: 1_920, Name: "C", Pitches: []uint8{60, 64, 67},
+			IntervalMask: 0x091, RootSpelling: 2,
 		}}},
 	}
 	var output bytes.Buffer
@@ -63,8 +65,38 @@ func TestWriteMusicXML_ProjectChordsGetSeparateStaff(t *testing.T) {
 		t.Fatal(err)
 	}
 	xml := output.String()
-	if !strings.Contains(xml, "<part-name>Project Chords</part-name>") || !strings.Contains(xml, "<words>C</words>") || strings.Count(xml, "<note>") != 3 {
+	if !strings.Contains(xml, "<part-name>Project Chords</part-name>") || !strings.Contains(xml, "<kind>major</kind>") || strings.Count(xml, "<note>") != 3 {
 		t.Fatalf("project chord staff missing:\n%s", xml)
+	}
+}
+
+func TestMusicXMLChordKinds_CoversMusicXML40Vocabulary(t *testing.T) {
+	if len(musicXMLChordKinds) != 33 {
+		t.Fatalf("chord kinds = %d, want 33", len(musicXMLChordKinds))
+	}
+	seen := make(map[string]bool, len(musicXMLChordKinds))
+	for _, kind := range musicXMLChordKinds {
+		if seen[kind.Name] {
+			t.Fatalf("duplicate chord kind %q", kind.Name)
+		}
+		seen[kind.Name] = true
+	}
+}
+
+func TestMakeHarmony_UsesKindsAndAlteredDegrees(t *testing.T) {
+	dominant := makeHarmony(logicx.Chord{IntervalMask: 0x491, RootSpelling: 2}, 0)
+	if dominant.Kind.Value != "dominant" || len(dominant.Degrees) != 0 {
+		t.Fatalf("dominant harmony = %+v", dominant)
+	}
+
+	altered := makeHarmony(logicx.Chord{
+		Name: "C(#11)", IntervalMask: 0x0d1, RootSpelling: 2,
+	}, 0)
+	wantDegrees := []xmlHarmonyDegree{
+		{Value: 3, Type: "add"}, {Value: 11, Alter: 1, Type: "add"}, {Value: 5, Type: "add"},
+	}
+	if altered.Kind.Value != "other" || altered.Kind.Text != "(#11)" || !slices.Equal(altered.Degrees, wantDegrees) {
+		t.Fatalf("altered harmony = %+v", altered)
 	}
 }
 
