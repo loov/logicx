@@ -12,12 +12,13 @@ import (
 
 // ProjectData contains both lossless chunks and decoded records.
 type ProjectData struct {
-	Header     [24]byte
-	Chunks     []Chunk
-	AudioUnits []AudioUnit
-	Tracks     []Track
-	Sequences  []MIDISequence
-	Markers    []Marker
+	Header        [24]byte
+	Chunks        []Chunk
+	AudioUnits    []AudioUnit
+	Tracks        []Track
+	Sequences     []MIDISequence
+	Markers       []Marker
+	ProjectChords []Chord
 }
 
 // Chunk is one lossless ProjectData record. Its semantics are undocumented;

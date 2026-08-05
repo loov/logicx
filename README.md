@@ -26,7 +26,9 @@ go run ./cmd/logicx-to-musicxml -o score.musicxml song.logicx
 
 Sequences with the same Logic name are combined into one MusicXML part.
 Global tempo, key, mode, and time signature come from `MetaData.plist`; markers
-are emitted as rehearsal marks. Tempo maps, active-region references, and
+are emitted as rehearsal marks. Region chords stay on their owning sequence;
+project chords get a `Project Chords` staff unless an existing staff already
+contains them. Tempo maps, chord records, active-region references, and
 articulation assignments remain available in raw chunks but are not decoded
 yet.
 

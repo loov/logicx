@@ -19,14 +19,18 @@ const (
 )
 
 func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
-	if len(alternative.Project.Sequences) == 0 {
-		return errors.New("no MIDI note sequences found")
+	sequences := scoreSequences(alternative.Project)
+	if len(sequences) == 0 {
+		return errors.New("no MIDI notes or chords found")
 	}
 
 	origin := logicBarOneTick
-	for _, sequence := range alternative.Project.Sequences {
+	for _, sequence := range sequences {
 		for _, note := range sequence.Notes {
 			origin = min(origin, note.Position)
+		}
+		for _, chord := range sequence.Chords {
+			origin = min(origin, chord.Position)
 		}
 	}
 	for _, marker := range alternative.Project.Markers {
@@ -38,7 +42,6 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	}
 	measureTicks := ticksPerQuarter * 4 * uint32(numerator) / uint32(denominator)
 
-	sequences := mergeSequences(alternative.Project.Sequences)
 	score := xmlScore{Version: "4.0"}
 	for i, sequence := range sequences {
 		id := "P" + strconv.Itoa(i+1)
@@ -61,6 +64,23 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	return encoder.Flush()
 }
 
+func scoreSequences(project logicx.ProjectData) []logicx.MIDISequence {
+	sequences := mergeSequences(project.Sequences)
+	for i := range sequences {
+		sequences[i].Notes = appendChordNotes(sequences[i].Notes, sequences[i].Chords)
+	}
+	if len(project.ProjectChords) == 0 {
+		return sequences
+	}
+	if i := chordStaff(sequences, project.ProjectChords); i >= 0 {
+		sequences[i].Chords = append(sequences[i].Chords, project.ProjectChords...)
+		return sequences
+	}
+	chords := logicx.MIDISequence{Name: "Project Chords", Chords: project.ProjectChords}
+	chords.Notes = appendChordNotes(nil, chords.Chords)
+	return append(sequences, chords)
+}
+
 func mergeSequences(sequences []logicx.MIDISequence) []logicx.MIDISequence {
 	indexes := make(map[string]int)
 	var merged []logicx.MIDISequence
@@ -72,8 +92,74 @@ func mergeSequences(sequences []logicx.MIDISequence) []logicx.MIDISequence {
 			merged = append(merged, logicx.MIDISequence{Name: sequence.Name})
 		}
 		merged[i].Notes = append(merged[i].Notes, sequence.Notes...)
+		merged[i].Chords = append(merged[i].Chords, sequence.Chords...)
 	}
 	return merged
+}
+
+type noteKey struct {
+	position uint32
+	fraction uint16
+	pitch    uint8
+}
+
+func appendChordNotes(notes []logicx.MIDINote, chords []logicx.Chord) []logicx.MIDINote {
+	seen := make(map[noteKey]bool, len(notes))
+	for _, note := range notes {
+		seen[noteKey{note.Position, note.PositionFraction, note.Pitch}] = true
+	}
+	for i, chord := range chords {
+		duration := chord.Duration
+		if duration == 0 {
+			// ponytail: absent chord lengths extend to the next chord or one
+			// quarter; remove this fallback once the chord decoder proves length.
+			duration = ticksPerQuarter
+			if i+1 < len(chords) && chords[i+1].Position > chord.Position {
+				duration = chords[i+1].Position - chord.Position
+			}
+		}
+		for _, pitch := range chord.Pitches {
+			key := noteKey{chord.Position, chord.PositionFraction, pitch}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			notes = append(notes, logicx.MIDINote{
+				Position: chord.Position, PositionFraction: chord.PositionFraction,
+				Pitch: pitch, Duration: duration,
+			})
+		}
+	}
+	return notes
+}
+
+func chordStaff(sequences []logicx.MIDISequence, chords []logicx.Chord) int {
+	var required []noteKey
+	for _, chord := range chords {
+		for _, pitch := range chord.Pitches {
+			required = append(required, noteKey{chord.Position, chord.PositionFraction, pitch})
+		}
+	}
+	if len(required) == 0 {
+		return -1
+	}
+	for i, sequence := range sequences {
+		present := make(map[noteKey]bool, len(sequence.Notes))
+		for _, note := range sequence.Notes {
+			present[noteKey{note.Position, note.PositionFraction, note.Pitch}] = true
+		}
+		all := true
+		for _, key := range required {
+			if !present[key] {
+				all = false
+				break
+			}
+		}
+		if all {
+			return i
+		}
+	}
+	return -1
 }
 
 type noteSegment struct {
@@ -121,6 +207,21 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			Placement: "above", Type: xmlDirectionType{Rehearsal: marker.Name}, Offset: &offset,
 		})
 	}
+	chordMeasures := make(map[int][]xmlDirection)
+	for _, chord := range sequence.Chords {
+		if chord.Name == "" {
+			continue
+		}
+		position := chord.Position - origin
+		measure := int(position / measureTicks)
+		for len(byMeasure) <= measure {
+			byMeasure = append(byMeasure, nil)
+		}
+		offset := position % measureTicks
+		chordMeasures[measure] = append(chordMeasures[measure], xmlDirection{
+			Placement: "above", Type: xmlDirectionType{Words: chord.Name}, Offset: &offset,
+		})
+	}
 	if len(byMeasure) == 0 {
 		byMeasure = append(byMeasure, nil)
 	}
@@ -152,6 +253,7 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			}
 		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
+		measure.Directions = append(measure.Directions, chordMeasures[i]...)
 		measure.Items = measureItems(notes)
 		part.Measures = append(part.Measures, measure)
 	}
@@ -261,6 +363,7 @@ type xmlDirection struct {
 type xmlDirectionType struct {
 	Metronome *xmlMetronome `xml:"metronome,omitempty"`
 	Rehearsal string        `xml:"rehearsal,omitempty"`
+	Words     string        `xml:"words,omitempty"`
 }
 
 type xmlMetronome struct {

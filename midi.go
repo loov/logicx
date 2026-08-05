@@ -18,6 +18,7 @@ type MIDISequence struct {
 	Name        string
 	ChunkOffset int
 	Notes       []MIDINote
+	Chords      []Chord
 }
 
 // MIDINote contains the stable fields of Logic's 32-byte AP note record.
