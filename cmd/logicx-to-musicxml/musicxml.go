@@ -328,18 +328,14 @@ func harmonyKind(chord logicx.Chord) string {
 
 func harmonyPitch(pitch, spelling uint8) (step string, alter *int, name string) {
 	naturals := [...]string{"C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"}
-	switch spelling {
-	case 1:
-		step, name = naturals[(pitch+1)%12], naturals[(pitch+1)%12]+"b"
-		value := -1
-		return step, &value, name
-	case 3:
-		step, name = naturals[(pitch+11)%12], naturals[(pitch+11)%12]+"#"
-		value := 1
-		return step, &value, name
-	default:
-		return naturals[pitch], nil, naturals[pitch]
+	value := int(spelling) - 2
+	step = naturals[(int(pitch)-value+12)%12]
+	accidental := [...]string{"bb", "b", "", "#", "##"}
+	name = step + accidental[spelling]
+	if value == 0 {
+		return step, nil, name
 	}
+	return step, &value, name
 }
 
 func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
@@ -388,6 +384,8 @@ func measureItems(notes []noteSegment) []xmlMeasureItem {
 }
 
 func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
+	// TODO(logicx): Does the chord record preserve spelling for every tone?
+	// Synthesized staff notes currently choose sharps from MIDI pitch alone.
 	steps := [...]string{"C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"}
 	sharps := [...]bool{false, true, false, true, false, false, true, false, true, false, true, false}
 	pitchClass := segment.Pitch % 12
