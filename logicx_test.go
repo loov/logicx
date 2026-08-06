@@ -147,6 +147,39 @@ func TestParseProjectData_MusicXMLImportPreservesNotesLyricsAndArticulations(t *
 	}
 }
 
+func TestParseProjectData_NativeScoreFixturePreservesNotation(t *testing.T) {
+	sequences := parseFixtureProject(t, "score-notation-native-logic.logicx").Sequences
+	if len(sequences) != 1 || len(sequences[0].Notes) != 36 {
+		t.Fatalf("sequences = %+v", sequences)
+	}
+	notes := sequences[0].Notes
+	if got := notes[11].Lyrics[0].Text; got != "pedal stop" {
+		t.Fatalf("pedal stop lyric = %q", got)
+	}
+	if len(notes[6].ScoreFermatas) != 1 || notes[6].ScoreFermatas[0].Inverted ||
+		len(notes[7].ScoreFermatas) != 1 || !notes[7].ScoreFermatas[0].Inverted {
+		t.Fatalf("fermatas = %+v, %+v", notes[6].ScoreFermatas, notes[7].ScoreFermatas)
+	}
+	wantOrnaments := []ScoreOrnamentKind{
+		ScoreOrnamentTrill, ScoreOrnamentTurn, ScoreOrnamentMordent,
+		ScoreOrnamentInvertedTurn, ScoreOrnamentInvertedMordent,
+		ScoreOrnamentInvertedTurnWithLine, ScoreOrnamentTremolo,
+	}
+	for i, want := range wantOrnaments {
+		got := notes[13+i].ScoreOrnaments
+		if len(got) != 1 || got[0].Kind != want {
+			t.Errorf("note %d ornaments = %+v, want %q", 13+i, got, want)
+		}
+	}
+	wantDirections := []ScoreArpeggioDirection{ScoreArpeggioDirectionNone, ScoreArpeggioDirectionUp, ScoreArpeggioDirectionDown}
+	for i, noteIndex := range []int{27, 30, 33} {
+		got := notes[noteIndex].ScoreArpeggios
+		if len(got) != 1 || got[0].Direction != wantDirections[i] {
+			t.Errorf("note %d arpeggios = %+v, want direction %q", noteIndex, got, wantDirections[i])
+		}
+	}
+}
+
 func TestParseProjectData_ParsesMarkers(t *testing.T) {
 	data := make([]byte, 24)
 	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})

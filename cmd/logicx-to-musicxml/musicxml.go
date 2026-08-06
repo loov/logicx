@@ -178,6 +178,9 @@ type noteSegment struct {
 	Pitch              uint8
 	Lyrics             []logicx.Lyric
 	ScoreArticulations []logicx.ScoreArticulation
+	ScoreFermatas      []logicx.ScoreFermata
+	ScoreOrnaments     []logicx.ScoreOrnament
+	ScoreArpeggios     []logicx.ScoreArpeggio
 	TieStart, TieEnd   bool
 }
 
@@ -275,9 +278,15 @@ func makePart(
 				Start: within, Duration: duration, Pitch: note.Pitch,
 				Lyrics:             note.Lyrics,
 				ScoreArticulations: note.ScoreArticulations,
+				ScoreFermatas:      note.ScoreFermatas,
+				ScoreOrnaments:     note.ScoreOrnaments,
+				ScoreArpeggios:     note.ScoreArpeggios,
 				TieStart:           !first, TieEnd: remaining > duration,
 			})
 			note.ScoreArticulations = nil
+			note.ScoreFermatas = nil
+			note.ScoreOrnaments = nil
+			note.ScoreArpeggios = nil
 			note.Lyrics = nil
 			position += duration
 			remaining -= duration
@@ -557,6 +566,17 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 		note.Notations.Tied = append(note.Notations.Tied, xmlTie{Type: "start"})
 	}
 	note.Notations.Articulations = makeXMLArticulations(segment.ScoreArticulations)
+	for _, fermata := range segment.ScoreFermatas {
+		typeName := "upright"
+		if fermata.Inverted {
+			typeName = "inverted"
+		}
+		note.Notations.Fermatas = append(note.Notations.Fermatas, xmlFermata{Type: typeName, Value: "normal"})
+	}
+	for _, arpeggio := range segment.ScoreArpeggios {
+		note.Notations.Arpeggiates = append(note.Notations.Arpeggiates, xmlArpeggiate{Direction: string(arpeggio.Direction)})
+	}
+	note.Notations.Ornaments = makeXMLOrnaments(segment.ScoreOrnaments)
 	for _, lyric := range segment.Lyrics {
 		number := ""
 		if lyric.Verse != 0 {
@@ -565,6 +585,33 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 		note.Lyrics = append(note.Lyrics, xmlLyric{Number: number, Text: lyric.Text})
 	}
 	return note
+}
+
+func makeXMLOrnaments(ornaments []logicx.ScoreOrnament) *xmlOrnaments {
+	var result xmlOrnaments
+	for _, ornament := range ornaments {
+		switch ornament.Kind {
+		case logicx.ScoreOrnamentTurn:
+			result.Turn = &struct{}{}
+		case logicx.ScoreOrnamentInvertedTurn:
+			result.InvertedTurn = &struct{}{}
+		case logicx.ScoreOrnamentInvertedTurnWithLine:
+			result.InvertedVerticalTurn = &struct{}{}
+		case logicx.ScoreOrnamentMordent:
+			result.Mordent = &struct{}{}
+		case logicx.ScoreOrnamentInvertedMordent:
+			result.InvertedMordent = &struct{}{}
+		case logicx.ScoreOrnamentTrill:
+			result.TrillMark = &struct{}{}
+		case logicx.ScoreOrnamentTremolo:
+			value := 3
+			result.Tremolo = &value
+		}
+	}
+	if result == (xmlOrnaments{}) {
+		return nil
+	}
+	return &result
 }
 
 func makeXMLArticulations(articulations []logicx.ScoreArticulation) *xmlArticulations {
@@ -742,7 +789,19 @@ type xmlTie struct {
 
 type xmlNotations struct {
 	Tied          []xmlTie          `xml:"tied,omitempty"`
+	Fermatas      []xmlFermata      `xml:"fermata,omitempty"`
+	Arpeggiates   []xmlArpeggiate   `xml:"arpeggiate,omitempty"`
 	Articulations *xmlArticulations `xml:"articulations,omitempty"`
+	Ornaments     *xmlOrnaments     `xml:"ornaments,omitempty"`
+}
+
+type xmlFermata struct {
+	Type  string `xml:"type,attr,omitempty"`
+	Value string `xml:",chardata"`
+}
+
+type xmlArpeggiate struct {
+	Direction string `xml:"direction,attr,omitempty"`
 }
 
 type xmlArticulations struct {
@@ -755,6 +814,16 @@ type xmlArticulations struct {
 
 type xmlStrongAccent struct {
 	Type string `xml:"type,attr,omitempty"`
+}
+
+type xmlOrnaments struct {
+	TrillMark            *struct{} `xml:"trill-mark,omitempty"`
+	Turn                 *struct{} `xml:"turn,omitempty"`
+	InvertedTurn         *struct{} `xml:"inverted-turn,omitempty"`
+	InvertedVerticalTurn *struct{} `xml:"inverted-vertical-turn,omitempty"`
+	Mordent              *struct{} `xml:"mordent,omitempty"`
+	InvertedMordent      *struct{} `xml:"inverted-mordent,omitempty"`
+	Tremolo              *int      `xml:"tremolo,omitempty"`
 }
 
 type xmlLyric struct {

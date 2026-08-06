@@ -23,7 +23,12 @@ func TestWriteMusicXML(t *testing.T) {
 						{Kind: logicx.ScoreArticulationAccent},
 						{Kind: logicx.ScoreArticulationMarcato, Flipped: true},
 						{Kind: logicx.ScoreArticulationStaccatissimo},
-					}},
+					}, ScoreFermatas: []logicx.ScoreFermata{{}, {Inverted: true}}, ScoreOrnaments: []logicx.ScoreOrnament{
+						{Kind: logicx.ScoreOrnamentTrill}, {Kind: logicx.ScoreOrnamentTurn},
+						{Kind: logicx.ScoreOrnamentInvertedTurn}, {Kind: logicx.ScoreOrnamentInvertedTurnWithLine},
+						{Kind: logicx.ScoreOrnamentMordent}, {Kind: logicx.ScoreOrnamentInvertedMordent},
+						{Kind: logicx.ScoreOrnamentTremolo},
+					}, ScoreArpeggios: []logicx.ScoreArpeggio{{}, {Direction: logicx.ScoreArpeggioDirectionUp}, {Direction: logicx.ScoreArpeggioDirectionDown}}},
 					{Position: logicBarOneTick, Pitch: 71, Duration: 720},
 					{Position: logicBarOneTick + 3_600, Pitch: 74, Duration: 480},
 				},
@@ -56,6 +61,11 @@ func TestWriteMusicXML(t *testing.T) {
 		`<fifths>-6</fifths>`, `<mode>minor</mode>`,
 		`<staccato></staccato>`, `<tenuto></tenuto>`, `<accent></accent>`,
 		`<strong-accent type="down"></strong-accent>`, `<staccatissimo></staccatissimo>`,
+		`<fermata type="upright">normal</fermata>`, `<fermata type="inverted">normal</fermata>`,
+		`<arpeggiate></arpeggiate>`, `<arpeggiate direction="up"></arpeggiate>`, `<arpeggiate direction="down"></arpeggiate>`,
+		`<trill-mark></trill-mark>`, `<turn></turn>`, `<inverted-turn></inverted-turn>`,
+		`<inverted-vertical-turn></inverted-vertical-turn>`, `<mordent></mordent>`,
+		`<inverted-mordent></inverted-mordent>`, `<tremolo>3</tremolo>`,
 		`<lyric number="1">`, `<text>hello</text>`,
 	} {
 		if !strings.Contains(xml, want) {

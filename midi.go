@@ -37,6 +37,9 @@ type MIDINote struct {
 	Duration           uint32
 	Lyrics             []Lyric
 	ScoreArticulations []ScoreArticulation
+	ScoreFermatas      []ScoreFermata
+	ScoreOrnaments     []ScoreOrnament
+	ScoreArpeggios     []ScoreArpeggio
 	Raw                [32]byte
 }
 
@@ -70,6 +73,54 @@ type ScoreArticulation struct {
 	Flags   uint8
 	Flipped bool
 	Raw     [16]byte
+}
+
+// ScoreFermata is a Logic Score Editor fermata attached to a note.
+type ScoreFermata struct {
+	Inverted bool
+	Code     uint8
+	Raw      [16]byte
+}
+
+// ScoreOrnamentKind identifies an ornament attached to a note.
+type ScoreOrnamentKind string
+
+const (
+	ScoreOrnamentUnknown              ScoreOrnamentKind = ""
+	ScoreOrnamentTurn                 ScoreOrnamentKind = "turn"
+	ScoreOrnamentInvertedTurn         ScoreOrnamentKind = "inverted-turn"
+	ScoreOrnamentInvertedTurnWithLine ScoreOrnamentKind = "inverted-turn-with-line"
+	ScoreOrnamentMordent              ScoreOrnamentKind = "mordent"
+	ScoreOrnamentInvertedMordent      ScoreOrnamentKind = "inverted-mordent"
+	ScoreOrnamentTrill                ScoreOrnamentKind = "trill"
+	ScoreOrnamentTremolo              ScoreOrnamentKind = "tremolo"
+)
+
+// ScoreOrnament is a positioned Logic Score Editor ornament.
+type ScoreOrnament struct {
+	Position         uint32
+	PositionFraction uint16
+	Kind             ScoreOrnamentKind
+	Code             uint8
+	Raw              [32]byte
+}
+
+// ScoreArpeggioDirection identifies an arpeggio's explicit direction.
+type ScoreArpeggioDirection string
+
+const (
+	ScoreArpeggioDirectionNone ScoreArpeggioDirection = ""
+	ScoreArpeggioDirectionUp   ScoreArpeggioDirection = "up"
+	ScoreArpeggioDirectionDown ScoreArpeggioDirection = "down"
+)
+
+// ScoreArpeggio is a positioned Logic Score Editor arpeggio mark.
+type ScoreArpeggio struct {
+	Position         uint32
+	PositionFraction uint16
+	Direction        ScoreArpeggioDirection
+	Code             uint8
+	Raw              [32]byte
 }
 
 // Marker is a Logic global marker. RTF preserves the formatted source text;
@@ -273,10 +324,22 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 func findMIDINotes(data []byte) []MIDINote {
 	var notes []MIDINote
 	var lyrics []Lyric
+	var ornaments []ScoreOrnament
+	var arpeggios []ScoreArpeggio
 	for offset := 0; offset+32 <= len(data); offset += 16 {
 		if lyric, size, ok := decodeLyric(data[offset:]); ok {
 			lyrics = append(lyrics, lyric)
 			offset += size - 16
+			continue
+		}
+		if ornament, ok := decodeScoreOrnament(data[offset : offset+32]); ok {
+			ornaments = append(ornaments, ornament)
+			offset += 16
+			continue
+		}
+		if arpeggio, ok := decodeScoreArpeggio(data[offset : offset+32]); ok {
+			arpeggios = append(arpeggios, arpeggio)
+			offset += 16
 			continue
 		}
 		note, ok := decodeMIDINote(data[offset : offset+32])
@@ -290,16 +353,38 @@ func findMIDINotes(data []byte) []MIDINote {
 			}
 			lyrics = lyrics[1:]
 		}
+		for len(ornaments) > 0 && scorePositionAtOrBefore(ornaments[0].Position, ornaments[0].PositionFraction, note) {
+			if ornaments[0].Position == note.Position && ornaments[0].PositionFraction == note.PositionFraction {
+				note.ScoreOrnaments = append(note.ScoreOrnaments, ornaments[0])
+			}
+			ornaments = ornaments[1:]
+		}
+		for len(arpeggios) > 0 && scorePositionAtOrBefore(arpeggios[0].Position, arpeggios[0].PositionFraction, note) {
+			if arpeggios[0].Position == note.Position && arpeggios[0].PositionFraction == note.PositionFraction {
+				note.ScoreArpeggios = append(note.ScoreArpeggios, arpeggios[0])
+			}
+			arpeggios = arpeggios[1:]
+		}
 		for articulationOffset := offset + 32; articulationOffset+16 <= len(data); articulationOffset += 16 {
-			articulation, ok := decodeScoreArticulation(data[articulationOffset : articulationOffset+16])
-			if !ok {
+			if isScoreEventStart(data[articulationOffset:]) {
 				break
 			}
-			note.ScoreArticulations = append(note.ScoreArticulations, articulation)
+			if fermata, ok := decodeScoreFermata(data[articulationOffset : articulationOffset+16]); ok {
+				note.ScoreFermatas = append(note.ScoreFermatas, fermata)
+				continue
+			}
+			articulation, ok := decodeScoreArticulation(data[articulationOffset : articulationOffset+16])
+			if ok {
+				note.ScoreArticulations = append(note.ScoreArticulations, articulation)
+			}
 		}
 		notes = append(notes, note)
 	}
 	return notes
+}
+
+func scorePositionAtOrBefore(position uint32, fraction uint16, note MIDINote) bool {
+	return position < note.Position || position == note.Position && fraction <= note.PositionFraction
 }
 
 func decodeMIDINote(data []byte) (MIDINote, bool) {
@@ -349,6 +434,70 @@ func decodeScoreArticulation(data []byte) (ScoreArticulation, bool) {
 	return articulation, true
 }
 
+func decodeScoreFermata(data []byte) (ScoreFermata, bool) {
+	var fermata ScoreFermata
+	if !record.Decode(data,
+		record.Equal(0, 0, 0, 0, 0),
+		record.Uint8(4, &fermata.Code),
+		record.Equal(5, 0, 0, 0x85, 0, 0, 0, 0, 0, 0, 0, 0),
+		record.Copy(0, fermata.Raw[:]),
+	) || fermata.Code != 0 && fermata.Code != 19 {
+		return ScoreFermata{}, false
+	}
+	fermata.Inverted = fermata.Code == 19
+	return fermata, true
+}
+
+func decodeScoreOrnament(data []byte) (ScoreOrnament, bool) {
+	var ornament ScoreOrnament
+	if !decodePositionedScoreSymbol(data, 0x42, &ornament.Position, &ornament.PositionFraction, &ornament.Code, ornament.Raw[:]) {
+		return ScoreOrnament{}, false
+	}
+	switch ornament.Code {
+	case 0:
+		ornament.Kind = ScoreOrnamentTurn
+	case 1:
+		ornament.Kind = ScoreOrnamentInvertedTurnWithLine
+	case 2:
+		ornament.Kind = ScoreOrnamentInvertedMordent
+	case 3:
+		ornament.Kind = ScoreOrnamentMordent
+	case 4:
+		ornament.Kind = ScoreOrnamentTrill
+	case 7:
+		ornament.Kind = ScoreOrnamentTremolo
+	case 19:
+		ornament.Kind = ScoreOrnamentInvertedTurn
+	}
+	return ornament, true
+}
+
+func decodeScoreArpeggio(data []byte) (ScoreArpeggio, bool) {
+	var arpeggio ScoreArpeggio
+	if !decodePositionedScoreSymbol(data, 0x49, &arpeggio.Position, &arpeggio.PositionFraction, &arpeggio.Code, arpeggio.Raw[:]) || arpeggio.Code > 2 {
+		return ScoreArpeggio{}, false
+	}
+	if arpeggio.Code == 1 {
+		arpeggio.Direction = ScoreArpeggioDirectionUp
+	} else if arpeggio.Code == 2 {
+		arpeggio.Direction = ScoreArpeggioDirectionDown
+	}
+	return arpeggio, true
+}
+
+func decodePositionedScoreSymbol(data []byte, symbol uint8, position *uint32, fraction *uint16, code *uint8, raw []byte) bool {
+	return record.Decode(data,
+		record.Equal(0, 0x70, 0),
+		record.Uint16LE(2, fraction),
+		record.Uint32LE(4, position),
+		record.Equal(8, 0, 0, 0),
+		record.Uint8(11, code),
+		record.Equal(12, symbol, 0, 0, 1),
+		record.Equal(23, 0x88),
+		record.Copy(0, raw),
+	)
+}
+
 func decodeLyric(data []byte) (Lyric, int, bool) {
 	var lyric Lyric
 	if !record.Decode(data,
@@ -383,11 +532,16 @@ func decodeLyric(data []byte) (Lyric, int, bool) {
 
 func nextScoreEvent(data []byte) int {
 	for offset := 16; offset+16 <= len(data); offset += 16 {
-		if data[offset] == 0x90 || (data[offset] == 0x70 && data[offset+1] == 0 && data[offset+12] >= 0x3c) {
+		if isScoreEventStart(data[offset:]) {
 			return offset
 		}
 	}
 	return 0
+}
+
+func isScoreEventStart(data []byte) bool {
+	return len(data) >= 16 && (data[0] == 0x90 || data[0] == 0xb0 ||
+		data[0] == 0x70 && data[1] == 0 && data[12] >= 0x3c)
 }
 
 func sequenceName(data []byte) string {
