@@ -451,6 +451,15 @@ func TestParseProjectData_SignatureMapsPreserveKeysMetersAndGrouping(t *testing.
 	}
 }
 
+func TestParseProjectData_MarkersDoNotDecodeAsTimeSignatures(t *testing.T) {
+	// The middle of a marker record looks like a 1/1 meter header at tick
+	// 2281701376; only the trailing record tells them apart.
+	times := parseFixtureProject(t, "chords.logicx").TimeSignatures
+	if len(times) != 1 || times[0].Position != 38_400 || times[0].Numerator != 4 || times[0].Denominator != 4 {
+		t.Fatalf("time signatures = %+v", times)
+	}
+}
+
 func parseFixtureProject(t *testing.T, name string) ProjectData {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name, "Alternatives", "000", "ProjectData"))

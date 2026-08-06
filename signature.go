@@ -50,8 +50,8 @@ func findTimeSignatureChanges(chunks []Chunk) []TimeSignatureChange {
 		if chunk.Type != "EvSq" {
 			continue
 		}
-		for offset := 0; offset+16 <= len(chunk.Data); offset += 16 {
-			change, ok := decodeTimeSignatureChange(chunk.Data[offset : offset+16])
+		for offset := 0; offset+32 <= len(chunk.Data); offset += 16 {
+			change, ok := decodeTimeSignatureChange(chunk.Data[offset : offset+32])
 			if !ok {
 				continue
 			}
@@ -69,8 +69,13 @@ func findTimeSignatureChanges(chunks []Chunk) []TimeSignatureChange {
 	return changes
 }
 
-// decodeTimeSignatureChange decodes a 16-byte meter record. The denominator is
-// stored as a power of two.
+// decodeTimeSignatureChange decodes a meter record from a 32-byte window. The
+// denominator is stored as a power of two.
+//
+// A meter event is a 16-byte header followed by a trailer that repeats the
+// event type, and both are required. Without the trailer, the middle of a
+// marker record decodes as a 1/1 meter at tick 2281701376, which stretches any
+// bar grid built from the result to hundreds of thousands of bars.
 func decodeTimeSignatureChange(data []byte) (TimeSignatureChange, bool) {
 	var change TimeSignatureChange
 	var denominatorPower uint8
@@ -83,6 +88,8 @@ func decodeTimeSignatureChange(data []byte) (TimeSignatureChange, bool) {
 		record.Uint8(12, &change.Numerator),
 		record.Equal(13, 0, 0),
 		record.Uint8(15, &change.Flags),
+		record.Equal(16, 0x30, 0),
+		record.Equal(23, 0x88),
 		record.Copy(0, change.Raw[:]),
 	)
 	if !ok || change.Numerator == 0 || denominatorPower > 7 || change.Flags&^byte(0x80) != 0 {

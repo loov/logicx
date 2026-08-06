@@ -42,6 +42,14 @@ const projectChordPositionBias = 4 * 960
 // carried in every chunk header.
 type chordSequenceID struct{ group, sequence uint32 }
 
+// chunkSequenceID reads a chunk's sequence identity from its header.
+func chunkSequenceID(chunk Chunk) chordSequenceID {
+	return chordSequenceID{
+		group:    binary.LittleEndian.Uint32(chunk.Header[6:10]),
+		sequence: binary.LittleEndian.Uint32(chunk.Header[10:14]),
+	}
+}
+
 // chordLink places a child chord sequence on the global harmony track.
 type chordLink struct {
 	position         uint32
@@ -55,10 +63,7 @@ func findProjectChords(chunks []Chunk) []Chord {
 	events := make(map[chordSequenceID][]byte)
 	durations := make(map[chordSequenceID]uint32)
 	for _, chunk := range chunks {
-		id := chordSequenceID{
-			group:    binary.LittleEndian.Uint32(chunk.Header[6:10]),
-			sequence: binary.LittleEndian.Uint32(chunk.Header[10:14]),
-		}
+		id := chunkSequenceID(chunk)
 		switch {
 		case chunk.Type == "EvSq":
 			events[id] = chunk.Data
@@ -72,11 +77,10 @@ func findProjectChords(chunks []Chunk) []Chord {
 		if chunk.Type != "MSeq" || sequenceName(chunk.Data) != "Global Harmonies" {
 			continue
 		}
-		group := binary.LittleEndian.Uint32(chunk.Header[6:10])
-		sequence := binary.LittleEndian.Uint32(chunk.Header[10:14])
-		links := record.Scan(events[chordSequenceID{group, sequence}], 80, 80, decodeChordLink)
+		id := chunkSequenceID(chunk)
+		links := record.Scan(events[id], 80, 80, decodeChordLink)
 		for _, link := range links {
-			decoded := record.Scan(events[chordSequenceID{group, link.sequence}], 32, 16, decodeChordEvent)
+			decoded := record.Scan(events[chordSequenceID{id.group, link.sequence}], 32, 16, decodeChordEvent)
 			if len(decoded) == 0 || link.position > math.MaxUint32-projectChordPositionBias {
 				continue
 			}
@@ -85,7 +89,7 @@ func findProjectChords(chunks []Chunk) []Chord {
 			chord := decoded[0]
 			chord.Position = link.position + projectChordPositionBias
 			chord.PositionFraction = link.positionFraction
-			chord.Duration = durations[chordSequenceID{group, link.sequence}]
+			chord.Duration = durations[chordSequenceID{id.group, link.sequence}]
 			chord.SequenceID = link.sequence
 			chords = append(chords, chord)
 		}

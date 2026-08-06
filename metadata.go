@@ -128,16 +128,14 @@ func readPropertyLists(root string) (map[string]any, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		isPropertyList, err := looksLikePropertyList(path)
-		if err != nil {
-			return err
-		}
-		if !isPropertyList {
+		// A bundle holds media and caches alongside its property lists, so a
+		// file this process cannot read is skipped rather than fatal.
+		if !looksLikePropertyList(path) {
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return nil
 		}
 		value, err := ParsePropertyList(data)
 		if err != nil {
@@ -157,21 +155,21 @@ func readPropertyLists(root string) (map[string]any, error) {
 }
 
 // looksLikePropertyList reports whether path is a property list, by extension
-// or by sniffing its leading bytes.
-func looksLikePropertyList(path string) (bool, error) {
+// or by sniffing its leading bytes. Files it cannot open or read are not.
+func looksLikePropertyList(path string) bool {
 	if strings.EqualFold(filepath.Ext(path), ".plist") {
-		return true, nil
+		return true
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return false, fmt.Errorf("open %q: %w", path, err)
+		return false
 	}
 	defer file.Close()
 	prefix := make([]byte, 256)
 	n, err := file.Read(prefix)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return false, fmt.Errorf("read %q: %w", path, err)
+		return false
 	}
 	prefix = bytes.TrimSpace(prefix[:n])
-	return bytes.HasPrefix(prefix, []byte("bplist00")) || bytes.Contains(prefix, []byte("<plist")), nil
+	return bytes.HasPrefix(prefix, []byte("bplist00")) || bytes.Contains(prefix, []byte("<plist"))
 }

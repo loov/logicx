@@ -20,6 +20,9 @@ const (
 	ticksPerQuarter = uint32(960)
 	// logicBarOneTick is the tick position of bar 1 in a Logic project.
 	logicBarOneTick = uint32(38_400)
+	// maxMeasures bounds the bar grid. A tick position is a 32-bit field, so
+	// corrupt data can ask for millions of bars; no real score needs this many.
+	maxMeasures = 100_000
 )
 
 // writeMusicXML renders one project alternative as a MusicXML 4.0 partwise
@@ -253,12 +256,13 @@ func meterTicks(numerator, denominator uint64) uint32 {
 }
 
 // locate returns the measure index containing position and the tick offset
-// within it. Positions before the map's origin clamp to its first measure.
+// within it. Positions outside the grid clamp to its first or last measure.
 func (m *measureMap) locate(position uint32) (int, uint32) {
 	if position < m.starts[0] {
 		return 0, 0
 	}
-	for uint64(position) >= uint64(m.starts[len(m.starts)-1])+uint64(m.durations[len(m.durations)-1]) {
+	for len(m.starts) < maxMeasures &&
+		uint64(position) >= uint64(m.starts[len(m.starts)-1])+uint64(m.durations[len(m.durations)-1]) {
 		start := m.starts[len(m.starts)-1] + m.durations[len(m.durations)-1]
 		numerator, denominator := m.numerator, m.denominator
 		for _, change := range m.changes {
@@ -274,7 +278,7 @@ func (m *measureMap) locate(position uint32) (int, uint32) {
 	for measure > 0 && position < m.starts[measure] {
 		measure--
 	}
-	return measure, position - m.starts[measure]
+	return measure, min(position-m.starts[measure], m.durations[measure]-1)
 }
 
 // makePart lays a sequence out over the bar grid. Notes are split at barlines
@@ -392,7 +396,8 @@ func makePart(
 	part := xmlPart{ID: id}
 	for i, notes := range byMeasure {
 		slices.SortFunc(notes, func(a, b noteSegment) int {
-			return cmp.Or(cmp.Compare(a.Start, b.Start), cmp.Compare(a.Pitch, b.Pitch))
+			return cmp.Or(cmp.Compare(a.Start, b.Start),
+				cmp.Compare(a.Duration, b.Duration), cmp.Compare(a.Pitch, b.Pitch))
 		})
 		measure := xmlMeasure{Number: i + 1}
 		if i == 0 {
@@ -526,18 +531,38 @@ func harmonyKind(chord logicx.Chord) string {
 }
 
 // harmonyPitch splits a pitch class and Logic spelling code into a MusicXML
-// step and alteration. Callers must have confirmed the chord is nameable, so
-// that spelling is in range and lands on a natural note name.
+// step and alteration. Spellings out of range, or that do not land on a
+// natural note name, fall back to naming the pitch class with sharps.
 func harmonyPitch(pitch, spelling uint8) (step string, alter *int, name string) {
 	naturals := [...]string{"C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"}
+	accidental := [...]string{"bb", "b", "", "#", "##"}
+	pitch %= 12
+	if int(spelling) >= len(accidental) {
+		return sharpPitchClass(pitch)
+	}
 	value := int(spelling) - 2
 	step = naturals[(int(pitch)-value+12)%12]
-	accidental := [...]string{"bb", "b", "", "#", "##"}
+	if step == "" {
+		return sharpPitchClass(pitch)
+	}
 	name = step + accidental[spelling]
 	if value == 0 {
 		return step, nil, name
 	}
 	return step, &value, name
+}
+
+// sharpPitchClass names a pitch class using sharps, for pitches that carry no
+// usable spelling of their own.
+func sharpPitchClass(pitch uint8) (step string, alter *int, name string) {
+	steps := [...]string{"C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"}
+	sharps := [...]bool{false, true, false, true, false, false, true, false, true, false, true, false}
+	step = steps[pitch%12]
+	if !sharps[pitch%12] {
+		return step, nil, step
+	}
+	one := 1
+	return step, &one, step + "#"
 }
 
 // harmonyDegrees lists a chord's tones as scale degrees relative to its root,
@@ -571,12 +596,16 @@ func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
 
 // measureItems turns the segments of one measure into note elements, moving
 // the MusicXML cursor forward or back between them. Segments that share a
-// start become one chord.
+// start and a duration become one chord.
 func measureItems(notes []noteSegment) []xmlMeasureItem {
 	var items []xmlMeasureItem
-	var cursor, previousStart uint32
+	var cursor uint32
+	var previous noteSegment
 	for i, segment := range notes {
-		chord := i > 0 && segment.Start == previousStart
+		// MusicXML gives a chord the duration of its first note, so segments
+		// that start together but end apart cannot share one; they get their
+		// own cursor move instead.
+		chord := i > 0 && segment.Start == previous.Start && segment.Duration == previous.Duration
 		if !chord {
 			if segment.Start > cursor {
 				items = append(items, xmlMeasureItem{Forward: &xmlMove{Duration: segment.Start - cursor}})
@@ -586,7 +615,7 @@ func measureItems(notes []noteSegment) []xmlMeasureItem {
 			cursor = segment.Start + segment.Duration
 		}
 		items = append(items, xmlMeasureItem{Note: makeXMLNote(segment, chord)})
-		previousStart = segment.Start
+		previous = segment
 	}
 	return items
 }
@@ -595,19 +624,13 @@ func measureItems(notes []noteSegment) []xmlMeasureItem {
 func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	// TODO(logicx): Does the chord record preserve spelling for every tone?
 	// Synthesized staff notes currently choose sharps from MIDI pitch alone.
-	steps := [...]string{"C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"}
-	sharps := [...]bool{false, true, false, true, false, false, true, false, true, false, true, false}
-	pitchClass := segment.Pitch % 12
+	step, alter, _ := sharpPitchClass(segment.Pitch)
 	note := &xmlNote{
-		Pitch:    xmlPitch{Step: steps[pitchClass], Octave: int(segment.Pitch)/12 - 1},
+		Pitch:    xmlPitch{Step: step, Alter: alter, Octave: int(segment.Pitch)/12 - 1},
 		Duration: segment.Duration, Voice: 1,
 	}
 	if chord {
 		note.Chord = &struct{}{}
-	}
-	if sharps[pitchClass] {
-		alter := 1
-		note.Pitch.Alter = &alter
 	}
 	var notations xmlNotations
 	if segment.TieStart {

@@ -49,11 +49,10 @@ func OpenBundle(path string) (*Bundle, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read alternative %q: %w", entry.Name(), err)
 		}
+		// An alternative without readable metadata still has a usable project;
+		// metadataFromValues substitutes defaults for a nil map.
 		metadataPath := filepath.ToSlash(filepath.Join("Alternatives", entry.Name(), "MetaData.plist"))
-		metadataValues, ok := propertyLists[metadataPath].(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("metadata %q is not a dictionary", entry.Name())
-		}
+		metadataValues, _ := propertyLists[metadataPath].(map[string]any)
 		parsed, err := ParseProjectData(project)
 		if err != nil {
 			return nil, fmt.Errorf("parse alternative %q: %w", entry.Name(), err)

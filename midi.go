@@ -208,10 +208,7 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 	descriptors := make(map[chordSequenceID]Chunk)
 	events := make(map[chordSequenceID]Chunk)
 	for _, chunk := range chunks {
-		id := chordSequenceID{
-			group:    binary.LittleEndian.Uint32(chunk.Header[6:10]),
-			sequence: binary.LittleEndian.Uint32(chunk.Header[10:14]),
-		}
+		id := chunkSequenceID(chunk)
 		switch chunk.Type {
 		case "MSeq":
 			descriptors[id] = chunk
@@ -226,10 +223,7 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		if chunk.Type != "EvSq" {
 			continue
 		}
-		id := chordSequenceID{
-			group:    binary.LittleEndian.Uint32(chunk.Header[6:10]),
-			sequence: binary.LittleEndian.Uint32(chunk.Header[10:14]),
-		}
+		id := chunkSequenceID(chunk)
 		descriptor, ok := descriptors[id]
 		if !ok {
 			continue
@@ -248,8 +242,14 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		ordered = append(ordered, s)
 	}
 
+	// Walk chunks rather than the events map so the result does not depend on
+	// map iteration order.
 	var sequences []MIDISequence
-	for id, event := range events {
+	for _, event := range chunks {
+		id := chunkSequenceID(event)
+		if event.Type != "EvSq" || events[id].Offset != event.Offset {
+			continue
+		}
 		descriptor, ok := descriptors[id]
 		if !ok || sequenceName(descriptor.Data) == "Global Harmonies" {
 			continue
@@ -714,14 +714,15 @@ func decodeLyric(data []byte) (Lyric, int, bool) {
 }
 
 // nextScoreEvent returns the offset of the next event record after the one at
-// the start of data, or zero when there is none.
+// the start of data. A record that is the last one in its sequence runs to the
+// end of the data.
 func nextScoreEvent(data []byte) int {
 	for offset := 16; offset+16 <= len(data); offset += 16 {
 		if isScoreEventStart(data[offset:]) {
 			return offset
 		}
 	}
-	return 0
+	return len(data) / 16 * 16
 }
 
 // isScoreEventStart reports whether data starts a note or positioned score
