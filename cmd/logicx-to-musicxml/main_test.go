@@ -101,7 +101,9 @@ func TestWriteMusicXML_ProjectChordsGetSeparateStaff(t *testing.T) {
 		t.Fatal(err)
 	}
 	xml := output.String()
-	if !strings.Contains(xml, "<part-name>Project Chords</part-name>") || !strings.Contains(xml, "<kind>major</kind>") || strings.Count(xml, "<note>") != 3 {
+	// Three chord tones for the half bar, then a rest filling the rest of it.
+	if !strings.Contains(xml, "<part-name>Project Chords</part-name>") || !strings.Contains(xml, "<kind>major</kind>") ||
+		strings.Count(xml, "<note>") != 4 || strings.Count(xml, "<rest></rest>") != 1 {
 		t.Fatalf("project chord staff missing:\n%s", xml)
 	}
 }
@@ -278,15 +280,16 @@ func TestWriteMusicXML_MarkersOpenSectionsWithDoubleBarlines(t *testing.T) {
 	if len(score.Parts) != 2 {
 		t.Fatalf("parts = %d", len(score.Parts))
 	}
-	// Every part carries the divider, or it shows on one staff only.
+	// Every part carries the divider, or it shows on one staff only. The bar
+	// before the marker ends with it, which is where MuseScore reads it.
 	for _, part := range score.Parts {
 		for _, measure := range part.Measures {
-			want := measure.Number == 3
+			want := measure.Number == 2
 			if got := measure.Barline != nil; got != want {
 				t.Errorf("measure %d barline = %v, want %v", measure.Number, got, want)
 				continue
 			}
-			if want && (measure.Barline.Location != "left" || measure.Barline.Style != "light-light") {
+			if want && (measure.Barline.Location != "right" || measure.Barline.Style != "light-light") {
 				t.Errorf("measure %d barline = %+v", measure.Number, *measure.Barline)
 			}
 		}
@@ -307,9 +310,10 @@ func TestWriteMusicXML_ChordStaffWritesOneSlashPerBeat(t *testing.T) {
 			Step   string `xml:"step"`
 			Octave int    `xml:"octave"`
 		} `xml:"pitch"`
-		Duration uint32 `xml:"duration"`
-		Stem     string `xml:"stem"`
-		Notehead string `xml:"notehead"`
+		Rest     *struct{} `xml:"rest"`
+		Duration uint32    `xml:"duration"`
+		Stem     string    `xml:"stem"`
+		Notehead string    `xml:"notehead"`
 	}
 	parse := func(t *testing.T, realizeChords bool) []note {
 		t.Helper()
@@ -330,7 +334,11 @@ func TestWriteMusicXML_ChordStaffWritesOneSlashPerBeat(t *testing.T) {
 		var notes []note
 		for _, part := range score.Parts {
 			for _, measure := range part.Measures {
-				notes = append(notes, measure.Notes...)
+				for _, n := range measure.Notes {
+					if n.Rest == nil {
+						notes = append(notes, n)
+					}
+				}
 			}
 		}
 		return notes
@@ -358,5 +366,58 @@ func TestWriteMusicXML_ChordStaffWritesOneSlashPerBeat(t *testing.T) {
 	}
 	if realized[0].Pitch.Step != "C" {
 		t.Errorf("realized chord starts on %q, want C", realized[0].Pitch.Step)
+	}
+}
+
+func TestWriteMusicXML_GapsAndEmptyBarsBecomeRests(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{Sequences: []logicx.MIDISequence{{
+			Name: "Lead", Notes: []logicx.MIDINote{
+				// One quarter on beat 2 of bar 1; bar 2 is silent.
+				{Position: logicBarOneTick + 960, Pitch: 60, Duration: 960},
+				{Position: logicBarOneTick + 3_840*2, Pitch: 60, Duration: 3_840},
+			},
+		}}},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative, false); err != nil {
+		t.Fatal(err)
+	}
+	var score struct {
+		Parts []struct {
+			Measures []struct {
+				Notes []struct {
+					Rest *struct {
+						Measure string `xml:"measure,attr"`
+					} `xml:"rest"`
+					Duration uint32 `xml:"duration"`
+				} `xml:"note"`
+				Forwards []struct{} `xml:"forward"`
+			} `xml:"measure"`
+		} `xml:"part"`
+	}
+	if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+		t.Fatal(err)
+	}
+	measures := score.Parts[0].Measures
+	if len(measures) != 3 {
+		t.Fatalf("measures = %d, want 3", len(measures))
+	}
+	// Every voice-1 gap is a rest, so nothing is left as blank space.
+	for i, measure := range measures {
+		if len(measure.Forwards) != 0 {
+			t.Errorf("measure %d leaves %d gaps unfilled", i+1, len(measure.Forwards))
+		}
+		var total uint32
+		for _, note := range measure.Notes {
+			total += note.Duration
+		}
+		if total != 3_840 {
+			t.Errorf("measure %d holds %d ticks, want a full 3840", i+1, total)
+		}
+	}
+	if rest := measures[1].Notes[0].Rest; len(measures[1].Notes) != 1 || rest == nil || rest.Measure != "yes" {
+		t.Errorf("silent bar = %+v, want one whole-measure rest", measures[1].Notes)
 	}
 }

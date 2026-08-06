@@ -36,7 +36,8 @@ recorded notes is written as a chord chart, one rhythm slash per beat; pass
 Timing is snapped to a 64th-note grid and durations are split into tied
 notatable values, so raw performance data (a Melodyne transcription, say) still
 produces a score notation programs will open. Notes that overlap within a part
-are spread across voices.
+are spread across voices, and silence in the first voice is written out as
+rests.
 Active MIDI-region placement, right-edge cropping, and loops are reconstructed;
 looped notes, region chords, tempo curves, lyrics, and score articulations are
 expanded in the exported score. Performance articulation-ID assignments remain

@@ -454,8 +454,11 @@ func makePart(
 		for len(byMeasure) <= measure {
 			byMeasure = append(byMeasure, nil)
 		}
-		// A marker opens a section, so it gets a double barline in front of it.
-		markerBarlines[measure] = measure > 0
+		// A marker opens a section, so the bar before it ends with a double
+		// barline. MuseScore only reads barlines on the right of a measure.
+		if measure > 0 {
+			markerBarlines[measure-1] = true
+		}
 		if !primary {
 			continue
 		}
@@ -551,12 +554,12 @@ func makePart(
 			measure.Attributes.Key = &key
 		}
 		if markerBarlines[i] {
-			measure.Barline = &xmlBarline{Location: "left", Style: "light-light"}
+			measure.Barline = &xmlBarline{Location: "right", Style: "light-light"}
 		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
 		measure.Directions = append(measure.Directions, tempoMeasures[i]...)
 		measure.Harmonies = append(measure.Harmonies, chordMeasures[i]...)
-		measure.Items = measureItems(notes)
+		measure.Items = measureItems(notes, measures.durations[i])
 		part.Measures = append(part.Measures, measure)
 	}
 	return part
@@ -723,10 +726,15 @@ func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
 // the MusicXML cursor forward or back between them. Segments that share a
 // start and a duration become one chord; each voice is written in turn, backing
 // the cursor up to the barline in between.
-func measureItems(notes []noteSegment) []xmlMeasureItem {
+func measureItems(notes []noteSegment, duration uint32) []xmlMeasureItem {
 	voices := 0
 	for _, segment := range notes {
 		voices = max(voices, segment.Voice)
+	}
+	if voices == 0 {
+		return []xmlMeasureItem{{Note: &xmlNote{
+			Rest: &xmlRest{Measure: "yes"}, Duration: duration, Voice: 1,
+		}}}
 	}
 	var items []xmlMeasureItem
 	var cursor uint32
@@ -748,7 +756,7 @@ func measureItems(notes []noteSegment) []xmlMeasureItem {
 			chord := !first && segment.Start == previous.Start && segment.Duration == previous.Duration
 			if !chord {
 				if segment.Start > cursor {
-					items = append(items, xmlMeasureItem{Forward: &xmlMove{Duration: segment.Start - cursor}})
+					items = append(items, restItems(segment.Start-cursor, voice)...)
 				} else if segment.Start < cursor {
 					items = append(items, xmlMeasureItem{Backup: &xmlMove{Duration: cursor - segment.Start}})
 				}
@@ -758,6 +766,28 @@ func measureItems(notes []noteSegment) []xmlMeasureItem {
 			previous = segment
 			first = false
 		}
+		if !first && cursor < duration {
+			items = append(items, restItems(duration-cursor, voice)...)
+			cursor = duration
+		}
+	}
+	return items
+}
+
+// restItems fills a gap so the staff shows rests rather than blank space.
+// ponytail: only the first voice is filled; extra voices are sparse by nature
+// and a full rest chain in each would clutter the staff.
+func restItems(duration uint32, voice int) []xmlMeasureItem {
+	if voice != 1 {
+		return []xmlMeasureItem{{Forward: &xmlMove{Duration: duration}}}
+	}
+	var items []xmlMeasureItem
+	for duration > 0 {
+		part := notatable(duration)
+		items = append(items, xmlMeasureItem{Note: &xmlNote{
+			Rest: &xmlRest{}, Duration: part, Voice: voice,
+		}})
+		duration -= part
 	}
 	return items
 }
@@ -793,7 +823,7 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	// Synthesized staff notes currently choose sharps from MIDI pitch alone.
 	step, alter, _ := sharpPitchClass(segment.Pitch)
 	note := &xmlNote{
-		Pitch:    xmlPitch{Step: step, Alter: alter, Octave: int(segment.Pitch)/12 - 1},
+		Pitch:    &xmlPitch{Step: step, Alter: alter, Octave: int(segment.Pitch)/12 - 1},
 		Duration: segment.Duration, Voice: max(segment.Voice, 1),
 	}
 	if chord {
@@ -941,15 +971,15 @@ type xmlPart struct {
 // which must keep their relative order.
 type xmlMeasure struct {
 	Number     int              `xml:"number,attr"`
-	Barline    *xmlBarline      `xml:"barline,omitempty"`
 	Attributes *xmlAttributes   `xml:"attributes,omitempty"`
 	Directions []xmlDirection   `xml:"direction,omitempty"`
 	Harmonies  []xmlHarmony     `xml:"harmony,omitempty"`
 	Items      []xmlMeasureItem `xml:",any"`
+	Barline    *xmlBarline      `xml:"barline,omitempty"`
 }
 
-// xmlBarline is a barline element. Only the left-hand section divider is
-// emitted, so the style is fixed.
+// xmlBarline is a barline element. Only the section divider is emitted, so the
+// style is fixed.
 type xmlBarline struct {
 	Location string `xml:"location,attr"`
 	Style    string `xml:"bar-style"`
@@ -1073,7 +1103,8 @@ type xmlMove struct {
 // simultaneity.
 type xmlNote struct {
 	Chord     *struct{}     `xml:"chord,omitempty"`
-	Pitch     xmlPitch      `xml:"pitch"`
+	Rest      *xmlRest      `xml:"rest,omitempty"`
+	Pitch     *xmlPitch     `xml:"pitch,omitempty"`
 	Duration  uint32        `xml:"duration"`
 	Ties      []xmlTie      `xml:"tie,omitempty"`
 	Voice     int           `xml:"voice"`
@@ -1081,6 +1112,11 @@ type xmlNote struct {
 	Notehead  string        `xml:"notehead,omitempty"`
 	Notations *xmlNotations `xml:"notations,omitempty"`
 	Lyrics    []xmlLyric    `xml:"lyric,omitempty"`
+}
+
+// xmlRest is a rest element. Measure is "yes" for a whole-measure rest.
+type xmlRest struct {
+	Measure string `xml:"measure,attr,omitempty"`
 }
 
 // xmlPitch is a note's pitch, with Alter in semitones.
