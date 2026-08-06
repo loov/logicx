@@ -305,6 +305,18 @@ func TestParseProjectData_RegionLoopingAndCropping(t *testing.T) {
 	}
 }
 
+func TestParseProjectData_TempoMapPreservesStepsAndCurves(t *testing.T) {
+	steps := parseFixtureProject(t, "tempo-map-steps.logicx").TempoChanges
+	linear := parseFixtureProject(t, "tempo-map-linear-ramp.logicx").TempoChanges
+	smooth := parseFixtureProject(t, "tempo-map-smooth-ramp.logicx").TempoChanges
+	if len(steps) != 3 || steps[0].Position != 38_400 || steps[0].BPM != 120 || steps[1].Position != 46_080 || steps[1].BPM != 90 || steps[2].Position != 53_760 || steps[2].BPM != 140 {
+		t.Fatalf("step tempos = %+v", steps)
+	}
+	if len(linear) != 18 || len(smooth) != 18 || linear[1].Position != 42_240 || linear[17].Position != 49_920 || linear[17].BPM != 90 || math.Abs(linear[9].BPM-105.8824) > 0.000_001 || math.Abs(smooth[9].BPM-116.5284) > 0.000_001 {
+		t.Fatalf("linear = %+v\nsmooth = %+v", linear, smooth)
+	}
+}
+
 func parseFixtureProject(t *testing.T, name string) ProjectData {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name, "Alternatives", "000", "ProjectData"))

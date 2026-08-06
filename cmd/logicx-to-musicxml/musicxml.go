@@ -36,6 +36,9 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	for _, marker := range alternative.Project.Markers {
 		origin = min(origin, marker.Position)
 	}
+	for _, tempo := range alternative.Project.TempoChanges {
+		origin = min(origin, tempo.Position)
+	}
 	numerator, denominator := alternative.Metadata.TimeSignature[0], alternative.Metadata.TimeSignature[1]
 	if numerator == 0 || denominator == 0 {
 		numerator, denominator = 4, 4
@@ -47,10 +50,12 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 		id := "P" + strconv.Itoa(i+1)
 		score.PartList.Parts = append(score.PartList.Parts, xmlScorePart{ID: id, Name: sequence.Name})
 		var markers []logicx.Marker
+		var tempos []logicx.TempoChange
 		if i == 0 {
 			markers = alternative.Project.Markers
+			tempos = alternative.Project.TempoChanges
 		}
-		score.Parts = append(score.Parts, makePart(id, sequence, markers, alternative.Metadata, origin, measureTicks))
+		score.Parts = append(score.Parts, makePart(id, sequence, markers, tempos, alternative.Metadata, origin, measureTicks))
 	}
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
@@ -170,7 +175,7 @@ type noteSegment struct {
 	TieStart, TieEnd bool
 }
 
-func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, metadata logicx.Metadata, origin, measureTicks uint32) xmlPart {
+func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, tempos []logicx.TempoChange, metadata logicx.Metadata, origin, measureTicks uint32) xmlPart {
 	var byMeasure [][]noteSegment
 	for _, note := range sequence.Notes {
 		if note.Duration == 0 {
@@ -209,6 +214,20 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			Placement: "above", Type: xmlDirectionType{Rehearsal: marker.Name}, Offset: &offset,
 		})
 	}
+	tempoMeasures := make(map[int][]xmlDirection)
+	for _, tempo := range tempos {
+		position := tempo.Position - origin
+		measure := int(position / measureTicks)
+		for len(byMeasure) <= measure {
+			byMeasure = append(byMeasure, nil)
+		}
+		offset := position % measureTicks
+		tempoMeasures[measure] = append(tempoMeasures[measure], xmlDirection{
+			Placement: "above", Offset: &offset,
+			Type:  xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: tempo.BPM}},
+			Sound: &xmlSound{Tempo: tempo.BPM},
+		})
+	}
 	chordMeasures := make(map[int][]xmlHarmony)
 	for _, chord := range sequence.Chords {
 		if chord.Name == "" {
@@ -244,7 +263,7 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 				Divisions: ticksPerQuarter, Key: xmlKey{Fifths: keyFifths(metadata.Key), Mode: mode},
 				Time: xmlTime{Beats: metadata.TimeSignature[0], BeatType: metadata.TimeSignature[1]},
 			}
-			if metadata.BPM > 0 {
+			if metadata.BPM > 0 && len(tempos) == 0 {
 				measure.Directions = append(measure.Directions, xmlDirection{
 					Placement: "above",
 					Type:      xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: metadata.BPM}},
@@ -253,6 +272,7 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			}
 		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
+		measure.Directions = append(measure.Directions, tempoMeasures[i]...)
 		measure.Harmonies = append(measure.Harmonies, chordMeasures[i]...)
 		measure.Items = measureItems(notes)
 		part.Measures = append(part.Measures, measure)

@@ -18,6 +18,7 @@ type ProjectData struct {
 	Tracks        []Track
 	Sequences     []MIDISequence
 	Markers       []Marker
+	TempoChanges  []TempoChange
 	ProjectChords []Chord
 }
 
@@ -41,6 +42,7 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	p := ProjectData{
 		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(data),
 		Tracks: findTracks(data), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
+		TempoChanges:  findTempoChanges(chunks),
 		ProjectChords: findProjectChords(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)

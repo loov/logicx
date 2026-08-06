@@ -23,6 +23,10 @@ func TestWriteMusicXML(t *testing.T) {
 				},
 			}},
 			Markers: []logicx.Marker{{Position: logicBarOneTick, Name: "Chorus"}},
+			TempoChanges: []logicx.TempoChange{
+				{Position: logicBarOneTick, BPM: 120},
+				{Position: logicBarOneTick + 1_920, BPM: 90},
+			},
 		},
 	}
 	var output bytes.Buffer
@@ -32,7 +36,8 @@ func TestWriteMusicXML(t *testing.T) {
 	xml := output.String()
 	for _, want := range []string{
 		`<score-partwise version="4.0">`, `<part-name>Trumpet</part-name>`, `<fifths>1</fifths>`,
-		`<sound tempo="120"></sound>`, `<chord></chord>`, `<tie type="start"></tie>`, `<tie type="stop"></tie>`,
+		`<sound tempo="120"></sound>`, `<sound tempo="90"></sound>`, `<offset>1920</offset>`,
+		`<chord></chord>`, `<tie type="start"></tie>`, `<tie type="stop"></tie>`,
 		`<rehearsal>Chorus</rehearsal>`,
 	} {
 		if !strings.Contains(xml, want) {
