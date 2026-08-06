@@ -27,10 +27,15 @@ go run ./cmd/logicx-to-musicxml -o score.musicxml song.logicx
 
 Sequences with the same Logic name are combined into one MusicXML part.
 Tempo, key, and time-signature maps are reconstructed, including asymmetric
-beat grouping; markers are emitted as rehearsal marks. Region chords stay on
+beat grouping; markers are emitted as rehearsal marks and open their bar with a
+double barline. Region chords stay on
 their owning sequence; decoded project chords get a `Project Chords` staff
 unless an existing staff already contains them, and chords use semantic
 MusicXML harmony elements.
+Timing is snapped to a 64th-note grid and durations are split into tied
+notatable values, so raw performance data (a Melodyne transcription, say) still
+produces a score notation programs will open. Notes that overlap within a part
+are spread across voices.
 Active MIDI-region placement, right-edge cropping, and loops are reconstructed;
 looped notes, region chords, tempo curves, lyrics, and score articulations are
 expanded in the exported score. Performance articulation-ID assignments remain

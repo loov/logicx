@@ -56,20 +56,33 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 		origin = min(origin, signature.Position)
 	}
 
+	origin = quantize(uint64(origin))
+
 	score := xmlScore{Version: "4.0"}
 	for i, sequence := range sequences {
 		id := "P" + strconv.Itoa(i+1)
 		score.PartList.Parts = append(score.PartList.Parts, xmlScorePart{ID: id, Name: sequence.Name})
-		var markers []logicx.Marker
 		var tempos []logicx.TempoChange
 		if i == 0 {
-			markers = alternative.Project.Markers
 			tempos = alternative.Project.TempoChanges
 		}
 		score.Parts = append(score.Parts, makePart(
-			id, sequence, markers, tempos, alternative.Project.TimeSignatures,
+			id, sequence, alternative.Project.Markers, i == 0, tempos, alternative.Project.TimeSignatures,
 			alternative.Project.KeySignatures, alternative.Metadata, origin,
 		))
+	}
+
+	// MuseScore refuses to open a score whose parts run to different lengths,
+	// so short parts get trailing empty measures.
+	bars := 0
+	for _, part := range score.Parts {
+		bars = max(bars, len(part.Measures))
+	}
+	for i := range score.Parts {
+		for len(score.Parts[i].Measures) < bars {
+			score.Parts[i].Measures = append(score.Parts[i].Measures,
+				xmlMeasure{Number: len(score.Parts[i].Measures) + 1})
+		}
 	}
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
@@ -141,9 +154,12 @@ func chordNotes(chords []logicx.Chord) []logicx.MIDINote {
 			// ponytail: absent chord lengths extend to the next chord or one
 			// quarter; remove this fallback once the chord decoder proves length.
 			duration = ticksPerQuarter
-			if i+1 < len(chords) && chords[i+1].Position > chord.Position {
-				duration = chords[i+1].Position - chord.Position
-			}
+		}
+		// Logic lets a chord run past the next one. On a staff that would be two
+		// overlapping voice-1 chords, which MuseScore refuses to import, so the
+		// chord stops where its successor begins.
+		if i+1 < len(chords) && chords[i+1].Position > chord.Position {
+			duration = min(duration, chords[i+1].Position-chord.Position)
 		}
 		for _, pitch := range chord.Pitches {
 			key := noteKey{chord.Position, chord.PositionFraction, pitch}
@@ -192,6 +208,32 @@ func chordStaff(sequences []logicx.MIDISequence, chords []logicx.Chord) int {
 	return -1
 }
 
+// shortestNote is the finest value the exporter notates, a 64th note.
+const shortestNote = 960 / 16 // ticksPerQuarter / 16, kept untyped
+
+// quantize snaps a tick value onto the shortestNote grid. Logic stores raw
+// performance timing — audio transcriptions in particular — and notation
+// cannot render off-grid positions or durations at all.
+func quantize(ticks uint64) uint32 {
+	const limit = uint64(^uint32(0)) / shortestNote * shortestNote
+	return uint32(min((ticks+shortestNote/2)/shortestNote*shortestNote, limit))
+}
+
+// notatable returns the longest prefix of a grid-aligned duration that maps to
+// a single note value, optionally dotted or double-dotted. Anything else has
+// to become a tied chain: MuseScore refuses to open a score containing a note
+// it cannot render, such as Melodyne's raw 1200-tick notes.
+func notatable(duration uint32) uint32 {
+	for value := ticksPerQuarter * 8; value >= shortestNote; value /= 2 {
+		for _, dotted := range [...]uint32{value * 7 / 4, value * 3 / 2, value} {
+			if dotted <= duration {
+				return dotted
+			}
+		}
+	}
+	return duration
+}
+
 // noteSegment is the part of a note that falls inside one measure. Notes
 // crossing a barline become several tied segments.
 type noteSegment struct {
@@ -204,6 +246,7 @@ type noteSegment struct {
 	ScoreArpeggios     []logicx.ScoreArpeggio
 	ScoreSlurs         []logicx.ScoreSlur
 	TieStart, TieEnd   bool
+	Voice              int
 }
 
 // measureMap converts tick positions into measure numbers, growing the bar
@@ -288,6 +331,7 @@ func makePart(
 	id string,
 	sequence logicx.MIDISequence,
 	markers []logicx.Marker,
+	primary bool,
 	tempos []logicx.TempoChange,
 	timeSignatures []logicx.TimeSignatureChange,
 	keySignatures []logicx.KeySignatureChange,
@@ -300,17 +344,18 @@ func makePart(
 		if note.Duration == 0 {
 			continue
 		}
-		// ponytail: MusicXML currently rounds sub-tick positions down; use a
-		// higher divisions value if real projects contain non-zero fractions.
-		position := note.Position
-		remaining := note.Duration
+		// ponytail: sub-tick position fractions are dropped; use a higher
+		// divisions value if real projects need them.
+		// Both ends snap to the grid, so notes that met exactly still meet.
+		position := quantize(uint64(note.Position))
+		remaining := max(quantize(uint64(note.Position)+uint64(note.Duration))-position, shortestNote)
 		first := true
 		for remaining > 0 {
 			measure, within := measures.locate(position)
 			for len(byMeasure) <= measure {
 				byMeasure = append(byMeasure, nil)
 			}
-			duration := min(remaining, measures.durations[measure]-within)
+			duration := notatable(min(remaining, measures.durations[measure]-within))
 			byMeasure[measure] = append(byMeasure[measure], noteSegment{
 				Start: within, Duration: duration, Pitch: note.Pitch,
 				Lyrics:             note.Lyrics,
@@ -333,10 +378,16 @@ func makePart(
 		}
 	}
 	markerMeasures := make(map[int][]xmlDirection)
+	markerBarlines := make(map[int]bool)
 	for _, marker := range markers {
 		measure, offset := measures.locate(marker.Position)
 		for len(byMeasure) <= measure {
 			byMeasure = append(byMeasure, nil)
+		}
+		// A marker opens a section, so it gets a double barline in front of it.
+		markerBarlines[measure] = measure > 0
+		if !primary {
+			continue
 		}
 		markerMeasures[measure] = append(markerMeasures[measure], xmlDirection{
 			Placement: "above", Type: xmlDirectionType{Rehearsal: marker.Name}, Offset: &offset,
@@ -397,8 +448,9 @@ func makePart(
 	for i, notes := range byMeasure {
 		slices.SortFunc(notes, func(a, b noteSegment) int {
 			return cmp.Or(cmp.Compare(a.Start, b.Start),
-				cmp.Compare(a.Duration, b.Duration), cmp.Compare(a.Pitch, b.Pitch))
+				cmp.Compare(b.Duration, a.Duration), cmp.Compare(a.Pitch, b.Pitch))
 		})
+		assignVoices(notes)
 		measure := xmlMeasure{Number: i + 1}
 		if i == 0 {
 			mode := strings.ToLower(metadata.Mode)
@@ -427,6 +479,9 @@ func makePart(
 				measure.Attributes = &xmlAttributes{}
 			}
 			measure.Attributes.Key = &key
+		}
+		if markerBarlines[i] {
+			measure.Barline = &xmlBarline{Location: "left", Style: "light-light"}
 		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
 		measure.Directions = append(measure.Directions, tempoMeasures[i]...)
@@ -596,28 +651,70 @@ func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
 
 // measureItems turns the segments of one measure into note elements, moving
 // the MusicXML cursor forward or back between them. Segments that share a
-// start and a duration become one chord.
+// start and a duration become one chord; each voice is written in turn, backing
+// the cursor up to the barline in between.
 func measureItems(notes []noteSegment) []xmlMeasureItem {
+	voices := 0
+	for _, segment := range notes {
+		voices = max(voices, segment.Voice)
+	}
 	var items []xmlMeasureItem
 	var cursor uint32
-	var previous noteSegment
-	for i, segment := range notes {
-		// MusicXML gives a chord the duration of its first note, so segments
-		// that start together but end apart cannot share one; they get their
-		// own cursor move instead.
-		chord := i > 0 && segment.Start == previous.Start && segment.Duration == previous.Duration
-		if !chord {
-			if segment.Start > cursor {
-				items = append(items, xmlMeasureItem{Forward: &xmlMove{Duration: segment.Start - cursor}})
-			} else if segment.Start < cursor {
-				items = append(items, xmlMeasureItem{Backup: &xmlMove{Duration: cursor - segment.Start}})
+	for voice := 1; voice <= voices; voice++ {
+		var previous noteSegment
+		first := true
+		for _, segment := range notes {
+			if segment.Voice != voice {
+				continue
 			}
-			cursor = segment.Start + segment.Duration
+			if first && len(items) > 0 {
+				// Voices restart at the beginning of the measure.
+				items = append(items, xmlMeasureItem{Backup: &xmlMove{Duration: cursor}})
+				cursor = 0
+			}
+			// MusicXML gives a chord the duration of its first note, so segments
+			// that start together but end apart cannot share one; they get their
+			// own cursor move instead.
+			chord := !first && segment.Start == previous.Start && segment.Duration == previous.Duration
+			if !chord {
+				if segment.Start > cursor {
+					items = append(items, xmlMeasureItem{Forward: &xmlMove{Duration: segment.Start - cursor}})
+				} else if segment.Start < cursor {
+					items = append(items, xmlMeasureItem{Backup: &xmlMove{Duration: cursor - segment.Start}})
+				}
+				cursor = segment.Start + segment.Duration
+			}
+			items = append(items, xmlMeasureItem{Note: makeXMLNote(segment, chord)})
+			previous = segment
+			first = false
 		}
-		items = append(items, xmlMeasureItem{Note: makeXMLNote(segment, chord)})
-		previous = segment
 	}
 	return items
+}
+
+// assignVoices spreads overlapping notes across voices. A MusicXML voice is
+// monophonic apart from chords, and MuseScore refuses to import a measure whose
+// voice plays two notes at once. Notes must be sorted by start, longest first.
+func assignVoices(notes []noteSegment) {
+	var ends []uint32 // tick at which each voice becomes free again
+	for i := 0; i < len(notes); {
+		j := i
+		for j < len(notes) && notes[j].Start == notes[i].Start && notes[j].Duration == notes[i].Duration {
+			j++
+		}
+		voice := 0
+		for voice < len(ends) && ends[voice] > notes[i].Start {
+			voice++
+		}
+		if voice == len(ends) {
+			ends = append(ends, 0)
+		}
+		ends[voice] = notes[i].Start + notes[i].Duration
+		for k := i; k < j; k++ {
+			notes[k].Voice = voice + 1
+		}
+		i = j
+	}
 }
 
 // makeXMLNote renders one segment, attaching its ties, notations and lyrics.
@@ -627,7 +724,7 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	step, alter, _ := sharpPitchClass(segment.Pitch)
 	note := &xmlNote{
 		Pitch:    xmlPitch{Step: step, Alter: alter, Octave: int(segment.Pitch)/12 - 1},
-		Duration: segment.Duration, Voice: 1,
+		Duration: segment.Duration, Voice: max(segment.Voice, 1),
 	}
 	if chord {
 		note.Chord = &struct{}{}
@@ -770,10 +867,18 @@ type xmlPart struct {
 // which must keep their relative order.
 type xmlMeasure struct {
 	Number     int              `xml:"number,attr"`
+	Barline    *xmlBarline      `xml:"barline,omitempty"`
 	Attributes *xmlAttributes   `xml:"attributes,omitempty"`
 	Directions []xmlDirection   `xml:"direction,omitempty"`
 	Harmonies  []xmlHarmony     `xml:"harmony,omitempty"`
 	Items      []xmlMeasureItem `xml:",any"`
+}
+
+// xmlBarline is a barline element. Only the left-hand section divider is
+// emitted, so the style is fixed.
+type xmlBarline struct {
+	Location string `xml:"location,attr"`
+	Style    string `xml:"bar-style"`
 }
 
 // xmlHarmony is a harmony element: one chord symbol.

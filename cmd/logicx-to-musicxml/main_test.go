@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	encodingxml "encoding/xml"
 	"slices"
 	"strings"
 	"testing"
@@ -174,5 +175,120 @@ func TestScoreSequences_RegionChordsPreserveRecordedNotes(t *testing.T) {
 	sequences := scoreSequences(project)
 	if len(sequences) != 1 || len(sequences[0].Notes) != 1 || sequences[0].Notes[0].Pitch != 62 {
 		t.Fatalf("score sequences = %+v", sequences)
+	}
+}
+
+// TestWriteMusicXML_NotatableAndMonophonicVoices covers what MuseScore refuses
+// to import: durations no note symbol can express, two notes sounding at once
+// in one voice, and parts of unequal length.
+func TestWriteMusicXML_NotatableAndMonophonicVoices(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{BPM: 120, TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{Sequences: []logicx.MIDISequence{
+			{Name: "Melody", Notes: []logicx.MIDINote{
+				{Position: logicBarOneTick, Pitch: 60, Duration: 1_200},         // quarter + 16th
+				{Position: logicBarOneTick + 1_200, Pitch: 62, Duration: 1_920}, // overlaps the next
+				{Position: logicBarOneTick + 1_920, Pitch: 64, Duration: 481},   // off-grid
+			}},
+			{Name: "Bass", Notes: []logicx.MIDINote{
+				{Position: logicBarOneTick + 3_840*4, Pitch: 36, Duration: 3_840},
+			}},
+		}},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative); err != nil {
+		t.Fatal(err)
+	}
+
+	var score struct {
+		Parts []struct {
+			Measures []struct {
+				Notes []struct {
+					Chord    *struct{} `xml:"chord"`
+					Duration uint32    `xml:"duration"`
+					Voice    int       `xml:"voice"`
+				} `xml:"note"`
+			} `xml:"measure"`
+		} `xml:"part"`
+	}
+	if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+		t.Fatal(err)
+	}
+	if len(score.Parts) != 2 {
+		t.Fatalf("parts = %d", len(score.Parts))
+	}
+	if a, b := len(score.Parts[0].Measures), len(score.Parts[1].Measures); a != b {
+		t.Errorf("parts have %d and %d measures", a, b)
+	}
+	for _, part := range score.Parts {
+		for _, measure := range part.Measures {
+			for _, note := range measure.Notes {
+				if notatable(note.Duration) != note.Duration {
+					t.Errorf("duration %d is not a single note value", note.Duration)
+				}
+			}
+		}
+	}
+
+	// The overlapping pair must not share a voice.
+	voices := map[int]bool{}
+	for _, measure := range score.Parts[0].Measures {
+		for _, note := range measure.Notes {
+			voices[note.Voice] = true
+		}
+	}
+	if len(voices) < 2 {
+		t.Errorf("overlapping notes stayed in voices %v", voices)
+	}
+}
+
+func TestWriteMusicXML_MarkersOpenSectionsWithDoubleBarlines(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{BPM: 120, TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{
+			Sequences: []logicx.MIDISequence{
+				{Name: "Lead", Notes: []logicx.MIDINote{{Position: logicBarOneTick, Pitch: 60, Duration: 3_840}}},
+				{Name: "Bass", Notes: []logicx.MIDINote{{Position: logicBarOneTick, Pitch: 36, Duration: 3_840}}},
+			},
+			Markers: []logicx.Marker{
+				{Position: logicBarOneTick, Name: "intro"},           // bar 1 keeps its plain barline
+				{Position: logicBarOneTick + 3_840*2, Name: "verse"}, // bar 3 opens a section
+			},
+		},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative); err != nil {
+		t.Fatal(err)
+	}
+
+	var score struct {
+		Parts []struct {
+			Measures []struct {
+				Number  int `xml:"number,attr"`
+				Barline *struct {
+					Location string `xml:"location,attr"`
+					Style    string `xml:"bar-style"`
+				} `xml:"barline"`
+			} `xml:"measure"`
+		} `xml:"part"`
+	}
+	if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+		t.Fatal(err)
+	}
+	if len(score.Parts) != 2 {
+		t.Fatalf("parts = %d", len(score.Parts))
+	}
+	// Every part carries the divider, or it shows on one staff only.
+	for _, part := range score.Parts {
+		for _, measure := range part.Measures {
+			want := measure.Number == 3
+			if got := measure.Barline != nil; got != want {
+				t.Errorf("measure %d barline = %v, want %v", measure.Number, got, want)
+				continue
+			}
+			if want && (measure.Barline.Location != "left" || measure.Barline.Style != "light-light") {
+				t.Errorf("measure %d barline = %+v", measure.Number, *measure.Barline)
+			}
+		}
 	}
 }
