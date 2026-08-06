@@ -283,14 +283,23 @@ func TestWriteMusicXML_MarkersOpenSectionsWithDoubleBarlines(t *testing.T) {
 	// Every part carries the divider, or it shows on one staff only. The bar
 	// before the marker ends with it, which is where MuseScore reads it.
 	for _, part := range score.Parts {
+		last := len(part.Measures)
 		for _, measure := range part.Measures {
-			want := measure.Number == 2
-			if got := measure.Barline != nil; got != want {
-				t.Errorf("measure %d barline = %v, want %v", measure.Number, got, want)
+			want := ""
+			switch measure.Number {
+			case 2:
+				want = "light-light"
+			case last:
+				want = "light-heavy"
+			}
+			if measure.Barline == nil {
+				if want != "" {
+					t.Errorf("measure %d has no barline, want %s", measure.Number, want)
+				}
 				continue
 			}
-			if want && (measure.Barline.Location != "right" || measure.Barline.Style != "light-light") {
-				t.Errorf("measure %d barline = %+v", measure.Number, *measure.Barline)
+			if measure.Barline.Location != "right" || measure.Barline.Style != want {
+				t.Errorf("measure %d barline = %+v, want right %s", measure.Number, *measure.Barline, want)
 			}
 		}
 	}

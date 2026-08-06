@@ -74,16 +74,20 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, realizeChords bo
 	}
 
 	// MuseScore refuses to open a score whose parts run to different lengths,
-	// so short parts get trailing empty measures.
-	bars := 0
+	// so short parts get trailing measures of rest.
+	var longest []xmlMeasure
 	for _, part := range score.Parts {
-		bars = max(bars, len(part.Measures))
+		if len(part.Measures) > len(longest) {
+			longest = part.Measures
+		}
 	}
 	for i := range score.Parts {
-		for len(score.Parts[i].Measures) < bars {
-			score.Parts[i].Measures = append(score.Parts[i].Measures,
-				xmlMeasure{Number: len(score.Parts[i].Measures) + 1})
+		for len(score.Parts[i].Measures) < len(longest) {
+			bar := longest[len(score.Parts[i].Measures)]
+			score.Parts[i].Measures = append(score.Parts[i].Measures, restMeasure(len(score.Parts[i].Measures)+1, bar.length))
 		}
+		last := &score.Parts[i].Measures[len(score.Parts[i].Measures)-1]
+		last.Barline = &xmlBarline{Location: "right", Style: "light-heavy"}
 	}
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
@@ -95,6 +99,11 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, realizeChords bo
 		return err
 	}
 	return encoder.Flush()
+}
+
+// restMeasure is a bar of silence, used to pad a part out to the score length.
+func restMeasure(number int, length uint32) xmlMeasure {
+	return xmlMeasure{Number: number, length: length, Items: measureItems(nil, length)}
 }
 
 // scorePart is a sequence together with how its staff is written. A staff with
@@ -524,7 +533,7 @@ func makePart(
 				cmp.Compare(b.Duration, a.Duration), cmp.Compare(a.Pitch, b.Pitch))
 		})
 		assignVoices(notes)
-		measure := xmlMeasure{Number: i + 1}
+		measure := xmlMeasure{Number: i + 1, length: measures.durations[i]}
 		if i == 0 {
 			mode := strings.ToLower(metadata.Mode)
 			if mode != "major" && mode != "minor" {
@@ -976,10 +985,10 @@ type xmlMeasure struct {
 	Harmonies  []xmlHarmony     `xml:"harmony,omitempty"`
 	Items      []xmlMeasureItem `xml:",any"`
 	Barline    *xmlBarline      `xml:"barline,omitempty"`
+	length     uint32           // bar length in ticks; not part of the document
 }
 
-// xmlBarline is a barline element. Only the section divider is emitted, so the
-// style is fixed.
+// xmlBarline is a barline element: a section divider or the final barline.
 type xmlBarline struct {
 	Location string `xml:"location,attr"`
 	Style    string `xml:"bar-style"`
