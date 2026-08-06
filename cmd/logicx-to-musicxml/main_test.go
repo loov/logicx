@@ -51,7 +51,7 @@ func TestWriteMusicXML(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative); err != nil {
+	if err := writeMusicXML(&output, alternative, true); err != nil {
 		t.Fatal(err)
 	}
 	xml := output.String()
@@ -97,7 +97,7 @@ func TestWriteMusicXML_ProjectChordsGetSeparateStaff(t *testing.T) {
 		}}},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative); err != nil {
+	if err := writeMusicXML(&output, alternative, true); err != nil {
 		t.Fatal(err)
 	}
 	xml := output.String()
@@ -146,7 +146,7 @@ func TestScoreSequences_ProjectChordsReuseExistingStaff(t *testing.T) {
 		}}},
 		ProjectChords: []logicx.Chord{chord},
 	}
-	sequences := scoreSequences(project)
+	sequences := scoreSequences(project, true)
 	if len(sequences) != 1 || sequences[0].Name != "Piano" || len(sequences[0].Chords) != 1 {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
@@ -158,7 +158,7 @@ func TestScoreSequences_RegionChordsStayOnRegionStaff(t *testing.T) {
 			Position: logicBarOneTick, Duration: 960, Name: "Dm", Pitches: []uint8{62, 65, 69},
 		}},
 	}}}
-	sequences := scoreSequences(project)
+	sequences := scoreSequences(project, true)
 	if len(sequences) != 1 || sequences[0].Name != "Guitar" || len(sequences[0].Notes) != 3 {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
@@ -172,7 +172,7 @@ func TestScoreSequences_RegionChordsPreserveRecordedNotes(t *testing.T) {
 			Position: logicBarOneTick, Duration: 960, Name: "Dm", Pitches: []uint8{62, 65, 69},
 		}},
 	}}}
-	sequences := scoreSequences(project)
+	sequences := scoreSequences(project, true)
 	if len(sequences) != 1 || len(sequences[0].Notes) != 1 || sequences[0].Notes[0].Pitch != 62 {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
@@ -196,7 +196,7 @@ func TestWriteMusicXML_NotatableAndMonophonicVoices(t *testing.T) {
 		}},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative); err != nil {
+	if err := writeMusicXML(&output, alternative, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,7 +257,7 @@ func TestWriteMusicXML_MarkersOpenSectionsWithDoubleBarlines(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative); err != nil {
+	if err := writeMusicXML(&output, alternative, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,5 +290,73 @@ func TestWriteMusicXML_MarkersOpenSectionsWithDoubleBarlines(t *testing.T) {
 				t.Errorf("measure %d barline = %+v", measure.Number, *measure.Barline)
 			}
 		}
+	}
+}
+
+func TestWriteMusicXML_ChordStaffWritesOneSlashPerBeat(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{BPM: 120, TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{ProjectChords: []logicx.Chord{
+			// Two bars of C, starting and ending off the beat.
+			{Position: logicBarOneTick + 120, Duration: 3_840*2 - 120, Name: "C", Pitches: []uint8{60, 64, 67}},
+		}},
+	}
+
+	type note struct {
+		Pitch struct {
+			Step   string `xml:"step"`
+			Octave int    `xml:"octave"`
+		} `xml:"pitch"`
+		Duration uint32 `xml:"duration"`
+		Stem     string `xml:"stem"`
+		Notehead string `xml:"notehead"`
+	}
+	parse := func(t *testing.T, realizeChords bool) []note {
+		t.Helper()
+		var output bytes.Buffer
+		if err := writeMusicXML(&output, alternative, realizeChords); err != nil {
+			t.Fatal(err)
+		}
+		var score struct {
+			Parts []struct {
+				Measures []struct {
+					Notes []note `xml:"note"`
+				} `xml:"measure"`
+			} `xml:"part"`
+		}
+		if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+			t.Fatal(err)
+		}
+		var notes []note
+		for _, part := range score.Parts {
+			for _, measure := range part.Measures {
+				notes = append(notes, measure.Notes...)
+			}
+		}
+		return notes
+	}
+
+	slashes := parse(t, false)
+	if len(slashes) != 8 {
+		t.Fatalf("slashes = %d, want 8 (two 4/4 bars)", len(slashes))
+	}
+	for i, note := range slashes {
+		if note.Duration != ticksPerQuarter || note.Stem != "none" || note.Notehead != "slash" ||
+			note.Pitch.Step != "B" || note.Pitch.Octave != 4 {
+			t.Errorf("slash %d = %+v", i, note)
+		}
+	}
+
+	realized := parse(t, true)
+	if len(realized) == 0 {
+		t.Fatal("realized chords produced no notes")
+	}
+	for i, note := range realized {
+		if note.Notehead != "" || note.Stem != "" {
+			t.Fatalf("realized note %d = %+v, want a plain notehead", i, note)
+		}
+	}
+	if realized[0].Pitch.Step != "C" {
+		t.Errorf("realized chord starts on %q, want C", realized[0].Pitch.Step)
 	}
 }

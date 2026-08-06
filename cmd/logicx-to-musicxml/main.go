@@ -17,9 +17,10 @@ import (
 func main() {
 	output := flag.String("o", "", "output file (default: stdout)")
 	alternative := flag.String("alternative", "", "project alternative (default: first)")
+	realizeChords := flag.Bool("realize-chords", false, "write chord staves as voiced pitches instead of rhythm slashes")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: logicx-to-musicxml [-o score.musicxml] [-alternative 000] project.logicx")
+		fmt.Fprintln(os.Stderr, "usage: logicx-to-musicxml [-o score.musicxml] [-alternative 000] [-realize-chords] project.logicx")
 		os.Exit(2)
 	}
 
@@ -33,7 +34,7 @@ func main() {
 	}
 
 	var document bytes.Buffer
-	if err := writeMusicXML(&document, alt); err != nil {
+	if err := writeMusicXML(&document, alt, *realizeChords); err != nil {
 		fatal(err)
 	}
 	if *output != "" {

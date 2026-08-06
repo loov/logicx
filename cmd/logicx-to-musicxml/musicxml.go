@@ -28,8 +28,8 @@ const (
 // writeMusicXML renders one project alternative as a MusicXML 4.0 partwise
 // score. Every sequence becomes a part; global markers and the tempo map are
 // attached to the first part only, as MusicXML expects.
-func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
-	sequences := scoreSequences(alternative.Project)
+func writeMusicXML(w io.Writer, alternative logicx.Alternative, realizeChords bool) error {
+	sequences := scoreSequences(alternative.Project, realizeChords)
 	if len(sequences) == 0 {
 		return errors.New("no MIDI notes or chords found")
 	}
@@ -67,7 +67,8 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 			tempos = alternative.Project.TempoChanges
 		}
 		score.Parts = append(score.Parts, makePart(
-			id, sequence, alternative.Project.Markers, i == 0, tempos, alternative.Project.TimeSignatures,
+			id, sequence.MIDISequence, sequence.slash,
+			alternative.Project.Markers, i == 0, tempos, alternative.Project.TimeSignatures,
 			alternative.Project.KeySignatures, alternative.Metadata, origin,
 		))
 	}
@@ -96,14 +97,29 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	return encoder.Flush()
 }
 
+// scorePart is a sequence together with how its staff is written. A staff with
+// no recorded notes shows its chords, either realized into pitches or as one
+// rhythm slash per beat.
+type scorePart struct {
+	logicx.MIDISequence
+	slash bool
+}
+
 // scoreSequences prepares the parts to export. Sequences without notes are
 // voiced from their chords, and the project chord track either joins a part
 // that already plays it or becomes a part of its own.
-func scoreSequences(project logicx.ProjectData) []logicx.MIDISequence {
-	sequences := mergeSequences(project.Sequences)
-	for i := range sequences {
-		if len(sequences[i].Notes) == 0 {
-			sequences[i].Notes = chordNotes(sequences[i].Chords)
+func scoreSequences(project logicx.ProjectData, realizeChords bool) []scorePart {
+	merged := mergeSequences(project.Sequences)
+	sequences := make([]scorePart, len(merged))
+	for i, sequence := range merged {
+		sequences[i] = scorePart{MIDISequence: sequence}
+		if len(sequence.Notes) != 0 {
+			continue
+		}
+		if realizeChords {
+			sequences[i].Notes = chordNotes(sequence.Chords)
+		} else {
+			sequences[i].slash = true
 		}
 	}
 	if len(project.ProjectChords) == 0 {
@@ -113,8 +129,12 @@ func scoreSequences(project logicx.ProjectData) []logicx.MIDISequence {
 		sequences[i].Chords = append(sequences[i].Chords, project.ProjectChords...)
 		return sequences
 	}
-	chords := logicx.MIDISequence{Name: "Project Chords", Chords: project.ProjectChords}
-	chords.Notes = chordNotes(chords.Chords)
+	chords := scorePart{MIDISequence: logicx.MIDISequence{Name: "Project Chords", Chords: project.ProjectChords}}
+	if realizeChords {
+		chords.Notes = chordNotes(chords.Chords)
+	} else {
+		chords.slash = true
+	}
 	return append(sequences, chords)
 }
 
@@ -179,7 +199,7 @@ func chordNotes(chords []logicx.Chord) []logicx.MIDINote {
 // chordStaff returns the index of the part that already plays every chord
 // tone, or -1 when no part does. Such a part shows the chord symbols instead
 // of a duplicate chord staff.
-func chordStaff(sequences []logicx.MIDISequence, chords []logicx.Chord) int {
+func chordStaff(sequences []scorePart, chords []logicx.Chord) int {
 	var required []noteKey
 	for _, chord := range chords {
 		for _, pitch := range chord.Pitches {
@@ -234,6 +254,35 @@ func notatable(duration uint32) uint32 {
 	return duration
 }
 
+// slashPitch is where a rhythm slash sits on the staff, the middle line of a
+// treble staff.
+const slashPitch = 71
+
+// slashNotes writes one rhythm slash per beat for as long as the chords last,
+// so the staff reads as a strumming pattern under the chord symbols instead of
+// a realized voicing. Slashes sit on the beat grid, so a chord that starts or
+// ends off the beat still fills whole beats.
+func slashNotes(chords []logicx.Chord, measures *measureMap) []logicx.MIDINote {
+	var notes []logicx.MIDINote
+	var written uint64 // end of the last slash, so chords never double up
+	for _, chord := range chords {
+		end := uint64(chord.Position) + uint64(chord.Duration)
+		for position := uint64(chord.Position); position < end; {
+			measure, within := measures.locate(uint32(position))
+			beat := uint64(measures.beats[measure])
+			start := uint64(measures.starts[measure]) + uint64(within)/beat*beat
+			if start >= written {
+				notes = append(notes, logicx.MIDINote{
+					Position: uint32(start), Pitch: slashPitch, Duration: uint32(beat),
+				})
+				written = start + beat
+			}
+			position = start + beat
+		}
+	}
+	return notes
+}
+
 // noteSegment is the part of a note that falls inside one measure. Notes
 // crossing a barline become several tied segments.
 type noteSegment struct {
@@ -246,6 +295,7 @@ type noteSegment struct {
 	ScoreArpeggios     []logicx.ScoreArpeggio
 	ScoreSlurs         []logicx.ScoreSlur
 	TieStart, TieEnd   bool
+	Slash              bool
 	Voice              int
 }
 
@@ -257,6 +307,7 @@ type measureMap struct {
 	changes     []logicx.TimeSignatureChange
 	starts      []uint32
 	durations   []uint32
+	beats       []uint32
 }
 
 // newMeasureMap builds a bar grid starting at origin, taking the initial meter
@@ -278,7 +329,19 @@ func newMeasureMap(origin uint32, metadata logicx.Metadata, changes []logicx.Tim
 		changes: changes, starts: []uint32{origin},
 	}
 	m.durations = append(m.durations, meterTicks(numerator, denominator))
+	m.beats = append(m.beats, beatTicks(denominator))
 	return m
+}
+
+// beatTicks returns the length of one beat, the note value the meter counts in.
+func beatTicks(denominator uint64) uint32 {
+	if denominator == 0 || denominator > uint64(ticksPerQuarter)*4 {
+		return ticksPerQuarter
+	}
+	if ticks := uint32(uint64(ticksPerQuarter) * 4 / denominator); ticks != 0 {
+		return ticks
+	}
+	return ticksPerQuarter
 }
 
 // meterTicks returns the length of one bar, falling back to 4/4 for meters
@@ -316,6 +379,7 @@ func (m *measureMap) locate(position uint32) (int, uint32) {
 		}
 		m.starts = append(m.starts, start)
 		m.durations = append(m.durations, meterTicks(numerator, denominator))
+		m.beats = append(m.beats, beatTicks(denominator))
 	}
 	measure := len(m.starts) - 1
 	for measure > 0 && position < m.starts[measure] {
@@ -330,6 +394,7 @@ func (m *measureMap) locate(position uint32) (int, uint32) {
 func makePart(
 	id string,
 	sequence logicx.MIDISequence,
+	slash bool,
 	markers []logicx.Marker,
 	primary bool,
 	tempos []logicx.TempoChange,
@@ -339,8 +404,12 @@ func makePart(
 	origin uint32,
 ) xmlPart {
 	measures := newMeasureMap(origin, metadata, timeSignatures)
+	notes := sequence.Notes
+	if slash {
+		notes = slashNotes(sequence.Chords, measures)
+	}
 	var byMeasure [][]noteSegment
-	for _, note := range sequence.Notes {
+	for _, note := range notes {
 		if note.Duration == 0 {
 			continue
 		}
@@ -364,7 +433,8 @@ func makePart(
 				ScoreOrnaments:     note.ScoreOrnaments,
 				ScoreArpeggios:     note.ScoreArpeggios,
 				ScoreSlurs:         note.ScoreSlurs,
-				TieStart:           !first, TieEnd: remaining > duration,
+				TieStart:           !first && !slash, TieEnd: remaining > duration && !slash,
+				Slash: slash,
 			})
 			note.ScoreArticulations = nil
 			note.ScoreFermatas = nil
@@ -729,6 +799,10 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	if chord {
 		note.Chord = &struct{}{}
 	}
+	if segment.Slash {
+		note.Stem, note.Notehead = "none", "slash"
+		return note
+	}
 	var notations xmlNotations
 	if segment.TieStart {
 		note.Ties = append(note.Ties, xmlTie{Type: "stop"})
@@ -1003,6 +1077,8 @@ type xmlNote struct {
 	Duration  uint32        `xml:"duration"`
 	Ties      []xmlTie      `xml:"tie,omitempty"`
 	Voice     int           `xml:"voice"`
+	Stem      string        `xml:"stem,omitempty"`
+	Notehead  string        `xml:"notehead,omitempty"`
 	Notations *xmlNotations `xml:"notations,omitempty"`
 	Lyrics    []xmlLyric    `xml:"lyric,omitempty"`
 }
