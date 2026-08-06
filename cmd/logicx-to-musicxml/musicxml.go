@@ -472,7 +472,10 @@ func makePart(
 			continue
 		}
 		markerMeasures[measure] = append(markerMeasures[measure], xmlDirection{
-			Placement: "above", Type: xmlDirectionType{Rehearsal: marker.Name}, Offset: &offset,
+			Placement: "above", System: "only-top", Offset: &offset,
+			Type: xmlDirectionType{Words: &xmlWords{
+				Weight: "bold", Enclosure: "rectangle", Text: marker.Name,
+			}},
 		})
 	}
 	tempoMeasures := make(map[int][]xmlDirection)
@@ -1059,16 +1062,25 @@ type xmlTime struct {
 // xmlDirection is a direction element: a marker, tempo or other instruction.
 type xmlDirection struct {
 	Placement string           `xml:"placement,attr,omitempty"`
+	System    string           `xml:"system,attr,omitempty"`
 	Type      xmlDirectionType `xml:"direction-type"`
 	Offset    *uint32          `xml:"offset,omitempty"`
 	Sound     *xmlSound        `xml:"sound,omitempty"`
 }
 
+// xmlWords is a text direction. Markers use it rather than a rehearsal
+// element, which notation programs renumber into their own A, B, C sequence
+// and so lose the section name.
+type xmlWords struct {
+	Weight    string `xml:"font-weight,attr,omitempty"`
+	Enclosure string `xml:"enclosure,attr,omitempty"`
+	Text      string `xml:",chardata"`
+}
+
 // xmlDirectionType is the direction-type element's content.
 type xmlDirectionType struct {
 	Metronome *xmlMetronome `xml:"metronome,omitempty"`
-	Rehearsal string        `xml:"rehearsal,omitempty"`
-	Words     string        `xml:"words,omitempty"`
+	Words     *xmlWords     `xml:"words,omitempty"`
 }
 
 // xmlMetronome is a printed metronome mark.

@@ -27,8 +27,9 @@ go run ./cmd/logicx-to-musicxml -o score.musicxml song.logicx
 
 Sequences with the same Logic name are combined into one MusicXML part.
 Tempo, key, and time-signature maps are reconstructed, including asymmetric
-beat grouping; markers are emitted as rehearsal marks and open their bar with a
-double barline. Region chords stay on their owning sequence; decoded project
+beat grouping; markers become bold system text and end the preceding bar with a
+double barline. They are deliberately not rehearsal marks, which notation
+programs renumber into their own A, B, C sequence and so lose the section name. Region chords stay on their owning sequence; decoded project
 chords get a `Project Chords` staff unless an existing staff already contains
 them, and chords use semantic MusicXML harmony elements. A staff with no
 recorded notes is written as a chord chart, one rhythm slash per beat; pass

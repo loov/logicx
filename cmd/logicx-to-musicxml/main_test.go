@@ -59,7 +59,7 @@ func TestWriteMusicXML(t *testing.T) {
 		`<score-partwise version="4.0">`, `<part-name>Trumpet</part-name>`, `<fifths>1</fifths>`,
 		`<sound tempo="120"></sound>`, `<sound tempo="90"></sound>`, `<offset>1920</offset>`,
 		`<chord></chord>`, `<tie type="start"></tie>`, `<tie type="stop"></tie>`,
-		`<rehearsal>Chorus</rehearsal>`, `<beats>2+3</beats>`, `<beat-type>8</beat-type>`,
+		`<words font-weight="bold" enclosure="rectangle">Chorus</words>`, `<beats>2+3</beats>`, `<beat-type>8</beat-type>`,
 		`<fifths>-6</fifths>`, `<mode>minor</mode>`,
 		`<staccato></staccato>`, `<tenuto></tenuto>`, `<accent></accent>`,
 		`<strong-accent type="down"></strong-accent>`, `<staccatissimo></staccatissimo>`,
