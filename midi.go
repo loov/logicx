@@ -28,14 +28,48 @@ type MIDISequence struct {
 	Chords         []Chord
 }
 
-// MIDINote contains the stable fields of Logic's 32-byte AP note record.
+// MIDINote contains the stable fields of Logic's 32-byte note record.
 // Raw preserves the remaining undocumented fields.
 type MIDINote struct {
+	Position           uint32
+	PositionFraction   uint16
+	Pitch              uint8
+	Duration           uint32
+	Lyrics             []Lyric
+	ScoreArticulations []ScoreArticulation
+	Raw                [32]byte
+}
+
+// Lyric is a score lyric attached to a MIDI note. Verse is zero when Logic
+// does not assign an explicit verse number.
+type Lyric struct {
 	Position         uint32
 	PositionFraction uint16
-	Pitch            uint8
-	Duration         uint32
-	Raw              [32]byte
+	Verse            uint8
+	Text             string
+	Raw              []byte
+}
+
+// ScoreArticulationKind identifies a notation symbol attached to a note.
+type ScoreArticulationKind string
+
+const (
+	ScoreArticulationUnknown       ScoreArticulationKind = ""
+	ScoreArticulationStaccato      ScoreArticulationKind = "staccato"
+	ScoreArticulationTenuto        ScoreArticulationKind = "tenuto"
+	ScoreArticulationAccent        ScoreArticulationKind = "accent"
+	ScoreArticulationMarcato       ScoreArticulationKind = "marcato"
+	ScoreArticulationStaccatissimo ScoreArticulationKind = "staccatissimo"
+)
+
+// ScoreArticulation is a Logic Score Editor symbol. Code and Raw preserve
+// values that have not yet been decoded.
+type ScoreArticulation struct {
+	Kind    ScoreArticulationKind
+	Code    uint8
+	Flags   uint8
+	Flipped bool
+	Raw     [16]byte
 }
 
 // Marker is a Logic global marker. RTF preserves the formatted source text;
@@ -237,7 +271,35 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 }
 
 func findMIDINotes(data []byte) []MIDINote {
-	return record.Scan(data, 32, 16, decodeMIDINote)
+	var notes []MIDINote
+	var lyrics []Lyric
+	for offset := 0; offset+32 <= len(data); offset += 16 {
+		if lyric, size, ok := decodeLyric(data[offset:]); ok {
+			lyrics = append(lyrics, lyric)
+			offset += size - 16
+			continue
+		}
+		note, ok := decodeMIDINote(data[offset : offset+32])
+		if !ok {
+			continue
+		}
+		for len(lyrics) > 0 && (lyrics[0].Position < note.Position ||
+			lyrics[0].Position == note.Position && lyrics[0].PositionFraction <= note.PositionFraction) {
+			if lyrics[0].Position == note.Position && lyrics[0].PositionFraction == note.PositionFraction {
+				note.Lyrics = append(note.Lyrics, lyrics[0])
+			}
+			lyrics = lyrics[1:]
+		}
+		for articulationOffset := offset + 32; articulationOffset+16 <= len(data); articulationOffset += 16 {
+			articulation, ok := decodeScoreArticulation(data[articulationOffset : articulationOffset+16])
+			if !ok {
+				break
+			}
+			note.ScoreArticulations = append(note.ScoreArticulations, articulation)
+		}
+		notes = append(notes, note)
+	}
+	return notes
 }
 
 func decodeMIDINote(data []byte) (MIDINote, bool) {
@@ -246,8 +308,8 @@ func decodeMIDINote(data []byte) (MIDINote, bool) {
 		record.Equal(0, 0x90),
 		record.Uint16LE(2, &note.PositionFraction),
 		record.Uint32LE(4, &note.Position),
-		record.Equal(10, 'A', 'P'),
 		record.Uint8(12, &note.Pitch),
+		record.Equal(16, 0x40, 0, 0, 0, 0, 0, 0, 0x89, 0, 0, 0, 0),
 		record.Uint32LE(28, &note.Duration),
 		record.Copy(0, note.Raw[:]),
 	)
@@ -255,6 +317,77 @@ func decodeMIDINote(data []byte) (MIDINote, bool) {
 		return MIDINote{}, false
 	}
 	return note, true
+}
+
+func decodeScoreArticulation(data []byte) (ScoreArticulation, bool) {
+	var articulation ScoreArticulation
+	if !record.Decode(data,
+		record.Equal(0, 0, 0, 0, 0),
+		record.Uint8(4, &articulation.Code),
+		record.Equal(5, 0),
+		record.Uint8(6, &articulation.Flags),
+		record.Equal(7, 0x85, 0, 0, 0, 0, 0, 0, 0, 0),
+		record.Copy(0, articulation.Raw[:]),
+	) || articulation.Code == 0 {
+		return ScoreArticulation{}, false
+	}
+	switch articulation.Code {
+	case 3:
+		articulation.Kind = ScoreArticulationStaccato
+	case 9:
+		articulation.Kind = ScoreArticulationTenuto
+	case 5:
+		articulation.Kind = ScoreArticulationAccent
+	case 6:
+		articulation.Kind = ScoreArticulationMarcato
+		articulation.Flipped = true
+	case 7:
+		articulation.Kind = ScoreArticulationMarcato
+	case 4, 8:
+		articulation.Kind = ScoreArticulationStaccatissimo
+	}
+	return articulation, true
+}
+
+func decodeLyric(data []byte) (Lyric, int, bool) {
+	var lyric Lyric
+	if !record.Decode(data,
+		record.Equal(0, 0x70, 0),
+		record.Uint16LE(2, &lyric.PositionFraction),
+		record.Uint32LE(4, &lyric.Position),
+		record.Equal(8, 0, 0, 0),
+		record.Uint8(11, &lyric.Verse),
+		record.Equal(12, 0x3d, 0, 0, 1),
+	) {
+		return Lyric{}, 0, false
+	}
+	size := nextScoreEvent(data)
+	if size < 64 {
+		return Lyric{}, 0, false
+	}
+	// ponytail: Logic's fixture-proven ASCII cells are decoded here; Raw
+	// remains available if non-ASCII lyrics prove a different encoding.
+	var text []byte
+	for offset := 48; offset < size; offset += 8 {
+		end := min(offset+8, size)
+		for i := end - 1; i >= offset; i-- {
+			if data[i] != 0 && data[i] != 0x88 {
+				text = append(text, data[i])
+			}
+		}
+	}
+	lyric.Text = strings.TrimSpace(string(text))
+	lyric.Raw = bytes.Clone(data[:size])
+	return lyric, size, lyric.Text != ""
+}
+
+func nextScoreEvent(data []byte) int {
+	for offset := 16; offset+16 <= len(data); offset += 16 {
+		if data[offset] == 0x90 || (data[offset] == 0x70 && data[offset+1] == 0 && data[offset+12] >= 0x3c) {
+			return offset
+		}
+	}
+	return 0
 }
 
 func sequenceName(data []byte) string {

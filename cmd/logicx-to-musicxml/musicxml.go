@@ -174,9 +174,11 @@ func chordStaff(sequences []logicx.MIDISequence, chords []logicx.Chord) int {
 }
 
 type noteSegment struct {
-	Start, Duration  uint32
-	Pitch            uint8
-	TieStart, TieEnd bool
+	Start, Duration    uint32
+	Pitch              uint8
+	Lyrics             []logicx.Lyric
+	ScoreArticulations []logicx.ScoreArticulation
+	TieStart, TieEnd   bool
 }
 
 type measureMap struct {
@@ -271,8 +273,12 @@ func makePart(
 			duration := min(remaining, measures.durations[measure]-within)
 			byMeasure[measure] = append(byMeasure[measure], noteSegment{
 				Start: within, Duration: duration, Pitch: note.Pitch,
-				TieStart: !first, TieEnd: remaining > duration,
+				Lyrics:             note.Lyrics,
+				ScoreArticulations: note.ScoreArticulations,
+				TieStart:           !first, TieEnd: remaining > duration,
 			})
+			note.ScoreArticulations = nil
+			note.Lyrics = nil
 			position += duration
 			remaining -= duration
 			first = false
@@ -550,7 +556,41 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 		note.Ties = append(note.Ties, xmlTie{Type: "start"})
 		note.Notations.Tied = append(note.Notations.Tied, xmlTie{Type: "start"})
 	}
+	note.Notations.Articulations = makeXMLArticulations(segment.ScoreArticulations)
+	for _, lyric := range segment.Lyrics {
+		number := ""
+		if lyric.Verse != 0 {
+			number = strconv.Itoa(int(lyric.Verse))
+		}
+		note.Lyrics = append(note.Lyrics, xmlLyric{Number: number, Text: lyric.Text})
+	}
 	return note
+}
+
+func makeXMLArticulations(articulations []logicx.ScoreArticulation) *xmlArticulations {
+	var result xmlArticulations
+	for _, articulation := range articulations {
+		switch articulation.Kind {
+		case logicx.ScoreArticulationStaccato:
+			result.Staccato = &struct{}{}
+		case logicx.ScoreArticulationTenuto:
+			result.Tenuto = &struct{}{}
+		case logicx.ScoreArticulationAccent:
+			result.Accent = &struct{}{}
+		case logicx.ScoreArticulationMarcato:
+			direction := "up"
+			if articulation.Flipped {
+				direction = "down"
+			}
+			result.StrongAccent = &xmlStrongAccent{Type: direction}
+		case logicx.ScoreArticulationStaccatissimo:
+			result.Staccatissimo = &struct{}{}
+		}
+	}
+	if result == (xmlArticulations{}) {
+		return nil
+	}
+	return &result
 }
 
 func keyFifths(key string) int {
@@ -687,6 +727,7 @@ type xmlNote struct {
 	Ties      []xmlTie     `xml:"tie,omitempty"`
 	Voice     int          `xml:"voice"`
 	Notations xmlNotations `xml:"notations,omitempty"`
+	Lyrics    []xmlLyric   `xml:"lyric,omitempty"`
 }
 
 type xmlPitch struct {
@@ -700,5 +741,23 @@ type xmlTie struct {
 }
 
 type xmlNotations struct {
-	Tied []xmlTie `xml:"tied,omitempty"`
+	Tied          []xmlTie          `xml:"tied,omitempty"`
+	Articulations *xmlArticulations `xml:"articulations,omitempty"`
+}
+
+type xmlArticulations struct {
+	Accent        *struct{}        `xml:"accent,omitempty"`
+	StrongAccent  *xmlStrongAccent `xml:"strong-accent,omitempty"`
+	Staccato      *struct{}        `xml:"staccato,omitempty"`
+	Tenuto        *struct{}        `xml:"tenuto,omitempty"`
+	Staccatissimo *struct{}        `xml:"staccatissimo,omitempty"`
+}
+
+type xmlStrongAccent struct {
+	Type string `xml:"type,attr,omitempty"`
+}
+
+type xmlLyric struct {
+	Number string `xml:"number,attr,omitempty"`
+	Text   string `xml:"text"`
 }

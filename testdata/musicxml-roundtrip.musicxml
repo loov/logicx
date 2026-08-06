@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <work><work-title>logicx MusicXML Roundtrip Oracle</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Roundtrip Oracle</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>12</divisions>
+        <key><fifths>0</fifths><mode>major</mode></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <direction placement="above"><direction-type><rehearsal>M1 articulations</rehearsal></direction-type><sound tempo="120"/></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><lyric><text>normal</text></lyric></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><staccato/></articulations></notations><lyric><text>staccato</text></lyric></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><tenuto/></articulations></notations><lyric><text>tenuto</text></lyric></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><accent/></articulations></notations><lyric><text>accent</text></lyric></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><strong-accent type="up"/></articulations></notations><lyric><text>marcato up</text></lyric></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><strong-accent type="down"/></articulations></notations><lyric><text>marcato down</text></lyric></note>
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><staccatissimo/></articulations></notations><lyric><text>staccatissimo</text></lyric></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type><notations><articulations><detached-legato/></articulations></notations><lyric><text>detached legato</text></lyric></note>
+    </measure>
+    <measure number="2">
+      <direction placement="above"><direction-type><rehearsal>M2 lyrics</rehearsal></direction-type></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><lyric number="1"><syllabic>begin</syllabic><text>mul</text></lyric><lyric number="2"><syllabic>single</syllabic><text>verse</text></lyric></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><lyric number="1"><syllabic>middle</syllabic><text>ti</text></lyric></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><lyric number="1"><syllabic>end</syllabic><text>syllable</text></lyric></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><lyric number="1"><syllabic>single</syllabic><text>single</text></lyric></note>
+    </measure>
+    <measure number="3">
+      <direction placement="above"><direction-type><rehearsal>M3 dynamics</rehearsal></direction-type></direction>
+      <direction placement="below"><direction-type><dynamics><p/></dynamics></direction-type></direction>
+      <direction placement="below"><direction-type><wedge type="crescendo" number="1"/></direction-type></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <direction placement="below"><direction-type><wedge type="stop" number="1"/></direction-type></direction>
+      <direction placement="below"><direction-type><dynamics><f/></dynamics></direction-type></direction>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <direction placement="below"><direction-type><dynamics><ff/></dynamics></direction-type></direction>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+    <measure number="4">
+      <direction placement="above"><direction-type><rehearsal>M4 ornaments</rehearsal></direction-type></direction>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><ornaments><trill-mark/></ornaments></notations></note>
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><ornaments><turn/></ornaments></notations></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><ornaments><mordent/></ornaments></notations></note>
+      <note><pitch><step>F</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><ornaments><tremolo type="single">3</tremolo></ornaments></notations></note>
+    </measure>
+    <measure number="5">
+      <direction placement="above"><direction-type><rehearsal>M5 ties slurs fermata</rehearsal></direction-type></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>24</duration><tie type="start"/><voice>1</voice><type>half</type><notations><tied type="start"/><slur type="start" number="1"/></notations></note>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>12</duration><tie type="stop"/><voice>1</voice><type>quarter</type><notations><tied type="stop"/><slur type="stop" number="1"/></notations></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><fermata type="upright">normal</fermata></notations></note>
+    </measure>
+    <measure number="6">
+      <direction placement="above"><direction-type><rehearsal>M6 harmonies</rehearsal></direction-type></direction>
+      <harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <harmony><root><root-step>D</root-step></root><kind>minor-seventh</kind></harmony>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <harmony><root><root-step>G</root-step></root><kind>dominant</kind></harmony>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <harmony><root><root-step>C</root-step></root><kind>major</kind><bass><bass-step>E</bass-step></bass></harmony>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+    <measure number="7">
+      <attributes><key><fifths>-6</fifths><mode>minor</mode></key><time><beats>2+3</beats><beat-type>8</beat-type></time></attributes>
+      <direction placement="above"><direction-type><rehearsal>M7 grouped meter key tempo</rehearsal></direction-type><sound tempo="90"/></direction>
+      <note><pitch><step>E</step><alter>-1</alter><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type></note>
+      <note><pitch><step>G</step><alter>-1</alter><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type></note>
+      <note><pitch><step>A</step><alter>-1</alter><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type></note>
+      <note><pitch><step>B</step><alter>-1</alter><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>eighth</type></note>
+    </measure>
+    <measure number="8">
+      <attributes><key><fifths>1</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+      <direction placement="above"><direction-type><rehearsal>M8 triplet</rehearsal></direction-type></direction>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>eighth</type><time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification><notations><tuplet type="start" number="1"/></notations></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>eighth</type><time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification></note>
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>eighth</type><time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification><notations><tuplet type="stop" number="1"/></notations></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+    <measure number="9">
+      <direction placement="above"><direction-type><rehearsal>M9 note attributes</rehearsal></direction-type></direction>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notehead>diamond</notehead></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notehead>x</notehead></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><technical><fingering>2</fingering><string>2</string></technical></notations></note>
+      <note><grace slash="yes"/><pitch><step>F</step><octave>4</octave></pitch><voice>1</voice><type>eighth</type></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>12</duration><voice>1</voice><type>quarter</type><notations><arpeggiate direction="up"/></notations></note>
+    </measure>
+    <measure number="10">
+      <attributes><clef><sign>F</sign><line>4</line></clef></attributes>
+      <direction placement="above"><direction-type><rehearsal>M10 text pedal</rehearsal></direction-type></direction>
+      <direction placement="above"><direction-type><words>dolce espressivo</words></direction-type></direction>
+      <direction placement="below"><direction-type><pedal type="start" line="yes"/></direction-type></direction>
+      <note><pitch><step>C</step><octave>3</octave></pitch><duration>24</duration><voice>1</voice><type>half</type></note>
+      <direction placement="below"><direction-type><pedal type="stop" line="yes"/></direction-type></direction>
+      <note><rest/><duration>24</duration><voice>1</voice><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>

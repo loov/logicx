@@ -89,6 +89,8 @@ func TestParseProjectData_ParsesMIDINotes(t *testing.T) {
 	binary.LittleEndian.PutUint32(note[4:8], 38_400)
 	copy(note[10:12], "AP")
 	note[12] = 74
+	note[16] = 0x40
+	note[23] = 0x89
 	binary.LittleEndian.PutUint32(note[28:32], 720)
 	data = appendChunk(data, "qSvE", events)
 
@@ -102,6 +104,46 @@ func TestParseProjectData_ParsesMIDINotes(t *testing.T) {
 	got := project.Sequences[0].Notes[0]
 	if got.Position != 38_400 || got.PositionFraction != 3 || got.Pitch != 74 || got.Duration != 720 || got.Raw[10] != 'A' {
 		t.Fatalf("note = %+v", got)
+	}
+}
+
+func TestParseProjectData_ScoreArticulationsPreserveKindAndDirection(t *testing.T) {
+	sequences := parseFixtureProject(t, "articulations.logicx").Sequences
+	if len(sequences) != 1 || len(sequences[0].Notes) != 7 {
+		t.Fatalf("sequences = %+v", sequences)
+	}
+	want := []ScoreArticulationKind{
+		ScoreArticulationUnknown, ScoreArticulationStaccato, ScoreArticulationTenuto,
+		ScoreArticulationAccent, ScoreArticulationMarcato, ScoreArticulationMarcato,
+		ScoreArticulationStaccatissimo,
+	}
+	for i, note := range sequences[0].Notes {
+		if i == 0 {
+			if len(note.ScoreArticulations) != 0 {
+				t.Errorf("normal note articulations = %+v", note.ScoreArticulations)
+			}
+			continue
+		}
+		if len(note.ScoreArticulations) != 1 || note.ScoreArticulations[0].Kind != want[i] || note.ScoreArticulations[0].Flipped != (i == 5) {
+			t.Errorf("note %d articulations = %+v", i, note.ScoreArticulations)
+		}
+	}
+}
+
+func TestParseProjectData_MusicXMLImportPreservesNotesLyricsAndArticulations(t *testing.T) {
+	sequences := parseFixtureProject(t, "musicxml-roundtrip.logicx").Sequences
+	if len(sequences) != 1 || len(sequences[0].Notes) != 43 {
+		t.Fatalf("sequences = %+v", sequences)
+	}
+	notes := sequences[0].Notes
+	if notes[0].Raw[10] != 0x69 || len(notes[0].Lyrics) != 1 || notes[0].Lyrics[0].Text != "normal" {
+		t.Fatalf("first note = %+v", notes[0])
+	}
+	if len(notes[8].Lyrics) != 2 || notes[8].Lyrics[0].Text != "mul-" || notes[8].Lyrics[0].Verse != 1 || notes[8].Lyrics[1].Text != "verse" || notes[8].Lyrics[1].Verse != 2 {
+		t.Fatalf("multi-verse note = %+v", notes[8])
+	}
+	if got := notes[6].ScoreArticulations; len(got) != 1 || got[0].Kind != ScoreArticulationStaccatissimo || got[0].Code != 4 {
+		t.Fatalf("imported staccatissimo = %+v", got)
 	}
 }
 

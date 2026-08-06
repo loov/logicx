@@ -17,7 +17,13 @@ func TestWriteMusicXML(t *testing.T) {
 		Project: logicx.ProjectData{
 			Sequences: []logicx.MIDISequence{{
 				Name: "Trumpet", Notes: []logicx.MIDINote{
-					{Position: logicBarOneTick, Pitch: 67, Duration: 720},
+					{Position: logicBarOneTick, Pitch: 67, Duration: 720, Lyrics: []logicx.Lyric{{Verse: 1, Text: "hello"}}, ScoreArticulations: []logicx.ScoreArticulation{
+						{Kind: logicx.ScoreArticulationStaccato},
+						{Kind: logicx.ScoreArticulationTenuto},
+						{Kind: logicx.ScoreArticulationAccent},
+						{Kind: logicx.ScoreArticulationMarcato, Flipped: true},
+						{Kind: logicx.ScoreArticulationStaccatissimo},
+					}},
 					{Position: logicBarOneTick, Pitch: 71, Duration: 720},
 					{Position: logicBarOneTick + 3_600, Pitch: 74, Duration: 480},
 				},
@@ -48,6 +54,9 @@ func TestWriteMusicXML(t *testing.T) {
 		`<chord></chord>`, `<tie type="start"></tie>`, `<tie type="stop"></tie>`,
 		`<rehearsal>Chorus</rehearsal>`, `<beats>2+3</beats>`, `<beat-type>8</beat-type>`,
 		`<fifths>-6</fifths>`, `<mode>minor</mode>`,
+		`<staccato></staccato>`, `<tenuto></tenuto>`, `<accent></accent>`,
+		`<strong-accent type="down"></strong-accent>`, `<staccatissimo></staccatissimo>`,
+		`<lyric number="1">`, `<text>hello</text>`,
 	} {
 		if !strings.Contains(xml, want) {
 			t.Errorf("output does not contain %q:\n%s", want, xml)
