@@ -85,12 +85,36 @@ func findProjectChords(chunks []Chunk) []Chord {
 			}
 			// The link identifies the active child; delete/recreate leaves the
 			// previous child sequence orphaned in ProjectData.
-			chord := decoded[0]
-			chord.Position = link.position + projectChordPositionBias
-			chord.PositionFraction = link.positionFraction
-			chord.Duration = durations[chordSequenceID{id.group, link.sequence}]
-			chord.SequenceID = link.sequence
-			chords = append(chords, chord)
+			// A child holds one chord, or several when the chords are grouped;
+			// the link places the first and the rest keep their spacing.
+			base := link.position + projectChordPositionBias
+			end := uint64(base) + uint64(durations[chordSequenceID{id.group, link.sequence}])
+			shift := int64(base) - int64(decoded[0].Position)
+			for i, chord := range decoded {
+				// A re-entered chord leaves its predecessor behind at the same
+				// position; only the last one at a position counts.
+				if i+1 < len(decoded) && decoded[i+1].Position <= chord.Position {
+					continue
+				}
+				position := int64(chord.Position) + shift
+				if position < 0 || uint64(position) > math.MaxUint32 {
+					continue
+				}
+				chord.Position = uint32(position)
+				if i == 0 {
+					chord.PositionFraction = link.positionFraction
+				}
+				switch {
+				case i+1 < len(decoded):
+					chord.Duration = decoded[i+1].Position - decoded[i].Position
+				case end > uint64(position):
+					chord.Duration = uint32(end - uint64(position))
+				default:
+					chord.Duration = 0
+				}
+				chord.SequenceID = link.sequence
+				chords = append(chords, chord)
+			}
 		}
 	}
 	inferChordDurationsUntil(chords, 0)

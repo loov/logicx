@@ -489,7 +489,10 @@ func decodeMIDINote(data []byte) (MIDINote, bool) {
 		record.Uint16LE(2, &note.PositionFraction),
 		record.Uint32LE(4, &note.Position),
 		record.Uint8(12, &note.Pitch),
-		record.Equal(16, 0x40, 0, 0, 0, 0, 0, 0, 0x89, 0, 0, 0, 0),
+		// Bytes 14..22 and 26..27 carry velocity and per-note tuning, which
+		// Melodyne transcriptions fill in; only the record markers are fixed.
+		record.Equal(13, 0),
+		record.Equal(23, 0x89, 0, 0),
 		record.Uint32LE(28, &note.Duration),
 		record.Copy(0, note.Raw[:]),
 	)

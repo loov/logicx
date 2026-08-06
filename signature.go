@@ -135,9 +135,21 @@ func decodeBeatGrouping(data []byte, numerator uint8) ([]uint8, [24]byte) {
 
 // findKeySignatureChanges collects the key map, sorted by position.
 func findKeySignatureChanges(chunks []Chunk) []KeySignatureChange {
+	// Chord regions carry a key record of their own. Only the signature track
+	// holds the project key map, and it is the sequence holding the meters.
+	signatureTrack := make(map[chordSequenceID]bool)
+	sequenceEvents(chunks, func(chunk Chunk, event Event) {
+		if event.Type != eventTimeSignature {
+			return
+		}
+		if _, ok := decodeTimeSignatureChange(event.Data); ok {
+			signatureTrack[chunkSequenceID(chunk)] = true
+		}
+	})
+
 	var changes []KeySignatureChange
-	sequenceEvents(chunks, func(_ Chunk, event Event) {
-		if event.Type != eventKeySignature {
+	sequenceEvents(chunks, func(chunk Chunk, event Event) {
+		if event.Type != eventKeySignature || len(signatureTrack) != 0 && !signatureTrack[chunkSequenceID(chunk)] {
 			return
 		}
 		if change, ok := decodeKeySignatureChange(event.Data); ok {

@@ -596,3 +596,51 @@ func appendChunkID(data []byte, descriptor string, id uint32, payload []byte) []
 	binary.LittleEndian.PutUint64(header[28:], uint64(len(payload)))
 	return append(append(data, header...), payload...)
 }
+
+func TestParseProjectData_GroupedChordsExpandFromOneChild(t *testing.T) {
+	project := parseFixtureProject(t, "chord-group.logicx")
+	// C D E F are grouped into a single child sequence, C D E F follow as
+	// separate children. All eight must land a bar apart.
+	var got []string
+	for _, chord := range project.ProjectChords {
+		got = append(got, chord.Name)
+	}
+	if want := []string{"C", "D", "E", "F", "C", "D", "E", "F"}; !slices.Equal(got, want) {
+		t.Fatalf("chords = %v, want %v", got, want)
+	}
+	for i, chord := range project.ProjectChords {
+		if want := uint32(38_400 + 3_840*i); chord.Position != want || chord.Duration != 3_840 {
+			t.Errorf("chord %d at %d for %d, want %d for 3840", i, chord.Position, chord.Duration, want)
+		}
+	}
+}
+
+func TestDecodeMIDINote_KeepsNotesCarryingVelocityAndTuning(t *testing.T) {
+	// A Melodyne transcription fills in the per-note fields that a typed-in
+	// note leaves zero; the record is still a note.
+	var data [32]byte
+	copy(data[:], []byte{
+		0x90, 0, 0, 0, 0x80, 0x2a, 0, 0, 0, 0, 0, 0, 61, 0, 0, 1,
+		0x40, 0, 0x19, 0xa9, 0x0d, 0, 0, 0x89, 0, 0, 0x2c, 0x01, 0xb0, 0x04, 0, 0,
+	})
+	note, ok := decodeMIDINote(data[:])
+	if !ok {
+		t.Fatal("note rejected")
+	}
+	if note.Position != 0x2a80 || note.Pitch != 61 || note.Duration != 1200 {
+		t.Fatalf("note = %+v", note)
+	}
+}
+
+func TestParseProjectData_KeyMapIgnoresChordRegionKeys(t *testing.T) {
+	// Every chord child sequence carries a key record; only the signature
+	// track holds the project key map.
+	project := parseFixtureProject(t, "chord-group.logicx")
+	if len(project.KeySignatures) != 1 {
+		t.Fatalf("key signatures = %d, want 1", len(project.KeySignatures))
+	}
+	project = parseFixtureProject(t, "signature-map-key.logicx")
+	if len(project.KeySignatures) != 3 {
+		t.Fatalf("key map = %d changes, want 3", len(project.KeySignatures))
+	}
+}
