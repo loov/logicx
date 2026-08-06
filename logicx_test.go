@@ -256,8 +256,11 @@ func TestParseProjectData_RegionChordsStayWithMIDISequence(t *testing.T) {
 	if len(project.Sequences) != 2 {
 		t.Fatalf("sequences = %+v", project.Sequences)
 	}
-	want := []string{"Aaug", "Ab/C", "Gm7", "Db7", "C7"}
 	for _, sequence := range project.Sequences {
+		want := []string{"Aaug", "Ab/C", "Gm7", "Db7", "C7"}
+		if sequence.Looped {
+			want = []string{"Aaug", "Ab/C", "Aaug", "Ab/C"}
+		}
 		got := make([]string, len(sequence.Chords))
 		for i, chord := range sequence.Chords {
 			got[i] = chord.Name
@@ -265,6 +268,40 @@ func TestParseProjectData_RegionChordsStayWithMIDISequence(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Errorf("sequence %q chords = %q, want %q", sequence.Name, got, want)
 		}
+	}
+}
+
+func TestParseProjectData_RegionLoopingAndCropping(t *testing.T) {
+	tests := []struct {
+		name          string
+		positions     []uint32
+		durations     []uint32
+		looped        []bool
+		notes, chords []int
+	}{
+		{"chord-region-loop-clean.logicx", []uint32{38_400}, []uint32{7_680}, []bool{false}, []int{6}, []int{2}},
+		{"chord-region-looped.logicx", []uint32{38_400}, []uint32{15_360}, []bool{true}, []int{12}, []int{4}},
+		{"chord-region-cropped.logicx", []uint32{38_400, 46_080}, []uint32{7_680, 3_840}, []bool{false, false}, []int{6, 3}, []int{2, 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sequences := parseFixtureProject(t, test.name).Sequences
+			if len(sequences) != len(test.positions) {
+				t.Fatalf("sequences = %+v", sequences)
+			}
+			for i, sequence := range sequences {
+				if sequence.Position != test.positions[i] || sequence.Duration != test.durations[i] || sequence.Looped != test.looped[i] || len(sequence.Notes) != test.notes[i] || len(sequence.Chords) != test.chords[i] {
+					t.Errorf("sequence[%d] = %+v", i, sequence)
+				}
+				if len(sequence.Chords) == 0 {
+					continue
+				}
+				last := sequence.Chords[len(sequence.Chords)-1]
+				if last.Position+last.Duration != sequence.Position+sequence.Duration {
+					t.Errorf("final chord ends at %d, region ends at %d", last.Position+last.Duration, sequence.Position+sequence.Duration)
+				}
+			}
+		})
 	}
 }
 

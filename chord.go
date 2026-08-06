@@ -57,8 +57,8 @@ func findProjectChords(chunks []Chunk) []Chord {
 		switch {
 		case chunk.Type == "EvSq":
 			events[id] = chunk.Data
-		case chunk.Type == "MSeq" && len(chunk.Data) >= 94 && sequenceName(chunk.Data) == "MIDI Region":
-			durations[id] = binary.LittleEndian.Uint32(chunk.Data[90:94])
+		case chunk.Type == "MSeq" && sequenceName(chunk.Data) == "MIDI Region":
+			durations[id] = sequenceDuration(chunk.Data)
 		}
 	}
 
@@ -90,19 +90,24 @@ func findProjectChords(chunks []Chunk) []Chord {
 }
 
 func inferChordDurations(chords []Chord) {
-	// TODO(logicx): Inline region chords have no child-sequence duration; how
-	// far does their final chord extend after region clipping or looping?
+	inferChordDurationsUntil(chords, 0)
+}
+
+func inferChordDurationsUntil(chords []Chord, end uint32) {
 	for i := 0; i+1 < len(chords); i++ {
 		if chords[i].Duration == 0 && chords[i+1].Position > chords[i].Position {
 			chords[i].Duration = chords[i+1].Position - chords[i].Position
 		}
+	}
+	if len(chords) != 0 && chords[len(chords)-1].Duration == 0 && end > chords[len(chords)-1].Position {
+		chords[len(chords)-1].Duration = end - chords[len(chords)-1].Position
 	}
 }
 
 func decodeChordLink(data []byte) (chordLink, bool) {
 	var link chordLink
 	ok := record.Decode(data,
-		record.Equal(0, 0x20, 0, 0, 0),
+		record.Equal(0, 0x20, 0),
 		record.Uint16LE(2, &link.positionFraction),
 		record.Uint32LE(4, &link.position),
 		record.Equal(20, 1, 0, 0, 0x89),
@@ -117,7 +122,7 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 	var chord Chord
 	var rootSpelling, bassSpelling uint8
 	if len(data) < 16 || data[15] > 1 || !record.Decode(data,
-		record.Equal(0, 0x70, 0, 0, 0),
+		record.Equal(0, 0x70, 0),
 		record.Uint16LE(2, &chord.PositionFraction),
 		record.Uint32LE(4, &chord.Position),
 		record.Equal(12, 0x67, 0, 0),
