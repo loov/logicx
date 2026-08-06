@@ -28,14 +28,21 @@ type TrackKind string
 
 const (
 	// TrackKindAudio is an audio channel strip.
-	TrackKindAudio      TrackKind = "audio"
+	TrackKindAudio TrackKind = "audio"
+	// TrackKindInstrument is a software instrument channel strip.
 	TrackKindInstrument TrackKind = "instrument"
-	TrackKindMaster     TrackKind = "master"
-	TrackKindOutput     TrackKind = "output"
-	TrackKindBus        TrackKind = "bus"
-	TrackKindAux        TrackKind = "aux"
-	TrackKindInput      TrackKind = "input"
-	TrackKindUnknown    TrackKind = "unknown"
+	// TrackKindMaster is the master channel strip.
+	TrackKindMaster TrackKind = "master"
+	// TrackKindOutput is a physical output channel strip.
+	TrackKindOutput TrackKind = "output"
+	// TrackKindBus is a bus channel strip.
+	TrackKindBus TrackKind = "bus"
+	// TrackKindAux is an auxiliary channel strip.
+	TrackKindAux TrackKind = "aux"
+	// TrackKindInput is a physical input channel strip.
+	TrackKindInput TrackKind = "input"
+	// TrackKindUnknown is a channel strip whose descriptor is not recognized.
+	TrackKindUnknown TrackKind = "unknown"
 )
 
 // Track contains a decoded channel strip and its plug-in chain.
@@ -49,8 +56,12 @@ type Track struct {
 	AudioFX    []AudioUnit
 }
 
+// htmlTag matches the markup Logic embeds in some plug-in display names.
 var htmlTag = regexp.MustCompile(`<[^>]+>`)
 
+// findAudioUnits scans for Audio Unit component descriptions, which appear as
+// three adjacent printable four-character codes with a known type in the
+// middle. The scan is byte-wise because channel strips are not chunk-aligned.
 func findAudioUnits(data []byte) []AudioUnit {
 	var found []AudioUnit
 	for off := 4; off+8 <= len(data); off++ {
@@ -70,6 +81,9 @@ func findAudioUnits(data []byte) []AudioUnit {
 	return found
 }
 
+// findTracks scans for channel-strip records: a length-prefixed printable name
+// padded to 16 bytes, followed by an 8-byte descriptor. Results are ordered by
+// offset, which assignAudioUnits relies on.
 func findTracks(data []byte) []Track {
 	var tracks []Track
 	for off := 1; off+24 <= len(data); off++ {
@@ -98,6 +112,9 @@ func findTracks(data []byte) []Track {
 	return tracks
 }
 
+// assignAudioUnits attaches each Audio Unit to the nearest preceding track.
+// Both slices come from findTracks and findAudioUnits, so both are sorted by
+// offset.
 func assignAudioUnits(tracks []Track, units []AudioUnit) {
 	if len(tracks) == 0 {
 		return
@@ -122,6 +139,7 @@ func assignAudioUnits(tracks []Track, units []AudioUnit) {
 	}
 }
 
+// trackKind classifies a channel strip from its 8-byte descriptor.
 func trackKind(d []byte) TrackKind {
 	switch d[0] {
 	case 0x89:
@@ -145,6 +163,8 @@ func trackKind(d []byte) TrackKind {
 	}
 }
 
+// extractName returns the last plausible printable run before off, which is
+// where Logic stores the plug-in's display name.
 func extractName(data []byte, off int) string {
 	start := max(0, off-200)
 	name := "<unknown>"

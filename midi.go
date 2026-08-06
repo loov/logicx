@@ -58,11 +58,18 @@ type Lyric struct {
 type ScoreArticulationKind string
 
 const (
-	ScoreArticulationUnknown       ScoreArticulationKind = ""
-	ScoreArticulationStaccato      ScoreArticulationKind = "staccato"
-	ScoreArticulationTenuto        ScoreArticulationKind = "tenuto"
-	ScoreArticulationAccent        ScoreArticulationKind = "accent"
-	ScoreArticulationMarcato       ScoreArticulationKind = "marcato"
+	// ScoreArticulationUnknown is a symbol this package does not recognize;
+	// ScoreArticulation.Code still carries Logic's value.
+	ScoreArticulationUnknown ScoreArticulationKind = ""
+	// ScoreArticulationStaccato is a staccato dot.
+	ScoreArticulationStaccato ScoreArticulationKind = "staccato"
+	// ScoreArticulationTenuto is a tenuto line.
+	ScoreArticulationTenuto ScoreArticulationKind = "tenuto"
+	// ScoreArticulationAccent is an accent.
+	ScoreArticulationAccent ScoreArticulationKind = "accent"
+	// ScoreArticulationMarcato is a marcato wedge; see Flipped for direction.
+	ScoreArticulationMarcato ScoreArticulationKind = "marcato"
+	// ScoreArticulationStaccatissimo is a staccatissimo wedge.
 	ScoreArticulationStaccatissimo ScoreArticulationKind = "staccatissimo"
 )
 
@@ -87,9 +94,12 @@ type ScoreFermata struct {
 type ScoreSlurType string
 
 const (
+	// ScoreSlurTypeUnknown is an endpoint that could not be classified.
 	ScoreSlurTypeUnknown ScoreSlurType = ""
-	ScoreSlurTypeStart   ScoreSlurType = "start"
-	ScoreSlurTypeStop    ScoreSlurType = "stop"
+	// ScoreSlurTypeStart is the first note under a slur.
+	ScoreSlurTypeStart ScoreSlurType = "start"
+	// ScoreSlurTypeStop is the last note under a slur.
+	ScoreSlurTypeStop ScoreSlurType = "stop"
 )
 
 // ScoreSlurPlacement identifies an explicit slur placement. An empty value
@@ -97,9 +107,12 @@ const (
 type ScoreSlurPlacement string
 
 const (
+	// ScoreSlurPlacementAutomatic leaves placement to the notation program.
 	ScoreSlurPlacementAutomatic ScoreSlurPlacement = ""
-	ScoreSlurPlacementAbove     ScoreSlurPlacement = "above"
-	ScoreSlurPlacementBelow     ScoreSlurPlacement = "below"
+	// ScoreSlurPlacementAbove forces the slur above the staff.
+	ScoreSlurPlacementAbove ScoreSlurPlacement = "above"
+	// ScoreSlurPlacementBelow forces the slur below the staff.
+	ScoreSlurPlacementBelow ScoreSlurPlacement = "below"
 )
 
 // ScoreSlur is one endpoint of a Logic Score Editor slur. Number pairs chord
@@ -116,14 +129,23 @@ type ScoreSlur struct {
 type ScoreOrnamentKind string
 
 const (
-	ScoreOrnamentUnknown              ScoreOrnamentKind = ""
-	ScoreOrnamentTurn                 ScoreOrnamentKind = "turn"
-	ScoreOrnamentInvertedTurn         ScoreOrnamentKind = "inverted-turn"
+	// ScoreOrnamentUnknown is an ornament this package does not recognize;
+	// ScoreOrnament.Code still carries Logic's value.
+	ScoreOrnamentUnknown ScoreOrnamentKind = ""
+	// ScoreOrnamentTurn is a turn.
+	ScoreOrnamentTurn ScoreOrnamentKind = "turn"
+	// ScoreOrnamentInvertedTurn is an inverted turn.
+	ScoreOrnamentInvertedTurn ScoreOrnamentKind = "inverted-turn"
+	// ScoreOrnamentInvertedTurnWithLine is an inverted turn with a vertical line.
 	ScoreOrnamentInvertedTurnWithLine ScoreOrnamentKind = "inverted-turn-with-line"
-	ScoreOrnamentMordent              ScoreOrnamentKind = "mordent"
-	ScoreOrnamentInvertedMordent      ScoreOrnamentKind = "inverted-mordent"
-	ScoreOrnamentTrill                ScoreOrnamentKind = "trill"
-	ScoreOrnamentTremolo              ScoreOrnamentKind = "tremolo"
+	// ScoreOrnamentMordent is a mordent.
+	ScoreOrnamentMordent ScoreOrnamentKind = "mordent"
+	// ScoreOrnamentInvertedMordent is an inverted mordent.
+	ScoreOrnamentInvertedMordent ScoreOrnamentKind = "inverted-mordent"
+	// ScoreOrnamentTrill is a trill mark.
+	ScoreOrnamentTrill ScoreOrnamentKind = "trill"
+	// ScoreOrnamentTremolo is a tremolo.
+	ScoreOrnamentTremolo ScoreOrnamentKind = "tremolo"
 )
 
 // ScoreOrnament is a positioned Logic Score Editor ornament.
@@ -139,8 +161,11 @@ type ScoreOrnament struct {
 type ScoreArpeggioDirection string
 
 const (
+	// ScoreArpeggioDirectionNone is an arpeggio without an explicit direction.
 	ScoreArpeggioDirectionNone ScoreArpeggioDirection = ""
-	ScoreArpeggioDirectionUp   ScoreArpeggioDirection = "up"
+	// ScoreArpeggioDirectionUp is an upward arpeggio.
+	ScoreArpeggioDirectionUp ScoreArpeggioDirection = "up"
+	// ScoreArpeggioDirectionDown is a downward arpeggio.
 	ScoreArpeggioDirectionDown ScoreArpeggioDirection = "down"
 )
 
@@ -164,6 +189,8 @@ type Marker struct {
 	Raw      [48]byte
 }
 
+// sequenceSource is a decoded event sequence before arrangement links place
+// it. Its positions are relative to the source sequence, not the project.
 type sequenceSource struct {
 	id             chordSequenceID
 	name           string
@@ -174,6 +201,9 @@ type sequenceSource struct {
 	chords         []Chord
 }
 
+// findMIDISequences pairs event sequences with their descriptors, then places
+// each source on the timeline through the arrangement links that reference it.
+// A source referenced by several links becomes several sequences.
 func findMIDISequences(chunks []Chunk) []MIDISequence {
 	descriptors := make(map[chordSequenceID]Chunk)
 	events := make(map[chordSequenceID]Chunk)
@@ -255,12 +285,15 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 }
 
 const (
-	// MSeq names are variable-length, so these fields are addressed from the
-	// stable end of the payload.
+	// sequenceMetadataTail is the offset of the sequence duration counted back
+	// from the end of an MSeq payload. MSeq names are variable-length, so these
+	// fields are addressed from the stable end of the payload.
 	sequenceMetadataTail = 219
-	noRegionLoop         = 0x3fffffff
+	// noRegionLoop is the loop length Logic writes for an unlooped region.
+	noRegionLoop = 0x3fffffff
 )
 
+// sequenceDuration returns the source length of an MSeq descriptor in ticks.
 func sequenceDuration(data []byte) uint32 {
 	if len(data) < sequenceMetadataTail {
 		return 0
@@ -268,6 +301,9 @@ func sequenceDuration(data []byte) uint32 {
 	return binary.LittleEndian.Uint32(data[len(data)-sequenceMetadataTail:])
 }
 
+// sequencePositionOffset returns the signed shift between a source sequence's
+// event positions and its placed position, which is non-zero for cropped
+// regions.
 func sequencePositionOffset(data []byte) int32 {
 	if len(data) < 55 {
 		return 0
@@ -275,12 +311,14 @@ func sequencePositionOffset(data []byte) int32 {
 	return int32(binary.LittleEndian.Uint32(data[len(data)-55:]))
 }
 
+// regionLink places a source sequence on the arrangement timeline.
 type regionLink struct {
 	position uint32
 	duration uint32
 	sequence uint32
 }
 
+// decodeRegionLink decodes an 80-byte arrangement locator.
 func decodeRegionLink(data []byte) (regionLink, bool) {
 	var link regionLink
 	ok := record.Decode(data,
@@ -294,6 +332,9 @@ func decodeRegionLink(data []byte) (regionLink, bool) {
 	return link, ok
 }
 
+// materializeRegion places a source sequence at a link's position, expanding
+// loop repeats and trimming events that fall outside the region. It reports
+// false when the placement would overflow the tick range.
 func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 	if link.position > math.MaxUint32-projectChordPositionBias {
 		return MIDISequence{}, false
@@ -351,6 +392,9 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 	return sequence, true
 }
 
+// findMIDINotes decodes the notes of an event sequence along with the score
+// symbols attached to them. Lyrics, ornaments and arpeggios precede the note
+// they belong to; articulations, fermatas and slur segments follow it.
 func findMIDINotes(data []byte) []MIDINote {
 	var notes []MIDINote
 	var lyrics []Lyric
@@ -421,10 +465,13 @@ func findMIDINotes(data []byte) []MIDINote {
 	return notes
 }
 
+// scorePositionAtOrBefore reports whether a symbol position is at or before
+// the note's position.
 func scorePositionAtOrBefore(position uint32, fraction uint16, note MIDINote) bool {
 	return position < note.Position || position == note.Position && fraction <= note.PositionFraction
 }
 
+// decodeMIDINote decodes a 32-byte note-on record.
 func decodeMIDINote(data []byte) (MIDINote, bool) {
 	var note MIDINote
 	ok := record.Decode(data,
@@ -442,6 +489,8 @@ func decodeMIDINote(data []byte) (MIDINote, bool) {
 	return note, true
 }
 
+// decodeScoreArticulation decodes a 16-byte articulation record that trails a
+// note.
 func decodeScoreArticulation(data []byte) (ScoreArticulation, bool) {
 	var articulation ScoreArticulation
 	if !record.Decode(data,
@@ -472,6 +521,7 @@ func decodeScoreArticulation(data []byte) (ScoreArticulation, bool) {
 	return articulation, true
 }
 
+// decodeScoreFermata decodes a 16-byte fermata record that trails a note.
 func decodeScoreFermata(data []byte) (ScoreFermata, bool) {
 	var fermata ScoreFermata
 	if !record.Decode(data,
@@ -486,11 +536,14 @@ func decodeScoreFermata(data []byte) (ScoreFermata, bool) {
 	return fermata, true
 }
 
+// scoreSlurSegment is the raw per-note slur marker Logic stores. Slur
+// endpoints are reconstructed from runs of these by attachScoreSlurs.
 type scoreSlurSegment struct {
 	code uint8
 	raw  [16]byte
 }
 
+// decodeScoreSlurSegment decodes a 16-byte slur marker that trails a note.
 func decodeScoreSlurSegment(data []byte) (scoreSlurSegment, bool) {
 	var segment scoreSlurSegment
 	if !record.Decode(data,
@@ -503,6 +556,9 @@ func decodeScoreSlurSegment(data []byte) (scoreSlurSegment, bool) {
 	return segment, true
 }
 
+// attachScoreSlurs turns per-note slur markers into start and stop endpoints.
+// segments is parallel to notes. A slur spans from the marked note to the next
+// note position; chord tones at both ends are paired by slur number.
 func attachScoreSlurs(notes []MIDINote, segments []scoreSlurSegment) {
 	consumed := make([]bool, len(notes))
 	for start := 0; start < len(notes); start = nextNotePosition(notes, start) {
@@ -558,6 +614,8 @@ func attachScoreSlurs(notes []MIDINote, segments []scoreSlurSegment) {
 	}
 }
 
+// nextNotePosition returns the index of the first note after the chord that
+// starts at index start, or len(notes).
 func nextNotePosition(notes []MIDINote, start int) int {
 	end := start + 1
 	for end < len(notes) && notes[end].Position == notes[start].Position &&
@@ -567,6 +625,7 @@ func nextNotePosition(notes []MIDINote, start int) int {
 	return end
 }
 
+// decodeScoreOrnament decodes a positioned 32-byte ornament record.
 func decodeScoreOrnament(data []byte) (ScoreOrnament, bool) {
 	var ornament ScoreOrnament
 	if !decodePositionedScoreSymbol(data, 0x42, &ornament.Position, &ornament.PositionFraction, &ornament.Code, ornament.Raw[:]) {
@@ -591,6 +650,7 @@ func decodeScoreOrnament(data []byte) (ScoreOrnament, bool) {
 	return ornament, true
 }
 
+// decodeScoreArpeggio decodes a positioned 32-byte arpeggio record.
 func decodeScoreArpeggio(data []byte) (ScoreArpeggio, bool) {
 	var arpeggio ScoreArpeggio
 	if !decodePositionedScoreSymbol(data, 0x49, &arpeggio.Position, &arpeggio.PositionFraction, &arpeggio.Code, arpeggio.Raw[:]) || arpeggio.Code > 2 {
@@ -604,6 +664,8 @@ func decodeScoreArpeggio(data []byte) (ScoreArpeggio, bool) {
 	return arpeggio, true
 }
 
+// decodePositionedScoreSymbol decodes the 32-byte record shared by the
+// positioned score symbols, matching symbol as the record's discriminator.
 func decodePositionedScoreSymbol(data []byte, symbol uint8, position *uint32, fraction *uint16, code *uint8, raw []byte) bool {
 	return record.Decode(data,
 		record.Equal(0, 0x70, 0),
@@ -617,6 +679,8 @@ func decodePositionedScoreSymbol(data []byte, symbol uint8, position *uint32, fr
 	)
 }
 
+// decodeLyric decodes a variable-length lyric record and returns its size in
+// bytes, so the caller can skip past it.
 func decodeLyric(data []byte) (Lyric, int, bool) {
 	var lyric Lyric
 	if !record.Decode(data,
@@ -649,6 +713,8 @@ func decodeLyric(data []byte) (Lyric, int, bool) {
 	return lyric, size, lyric.Text != ""
 }
 
+// nextScoreEvent returns the offset of the next event record after the one at
+// the start of data, or zero when there is none.
 func nextScoreEvent(data []byte) int {
 	for offset := 16; offset+16 <= len(data); offset += 16 {
 		if isScoreEventStart(data[offset:]) {
@@ -658,11 +724,14 @@ func nextScoreEvent(data []byte) int {
 	return 0
 }
 
+// isScoreEventStart reports whether data starts a note or positioned score
+// event, which bounds the trailing records that belong to the previous note.
 func isScoreEventStart(data []byte) bool {
 	return len(data) >= 16 && (data[0] == 0x90 || data[0] == 0xb0 ||
 		data[0] == 0x70 && data[1] == 0 && data[12] >= 0x3c)
 }
 
+// sequenceName returns the region name stored at the end of an MSeq payload.
 func sequenceName(data []byte) string {
 	runs := printableRun.FindAll(data, -1)
 	if len(runs) == 0 {
@@ -671,6 +740,8 @@ func sequenceName(data []byte) string {
 	return strings.TrimSpace(string(runs[len(runs)-1]))
 }
 
+// findMarkers decodes global markers and resolves their text, sorted by
+// position.
 func findMarkers(chunks []Chunk) []Marker {
 	texts := make(map[uint32]string)
 	for _, chunk := range chunks {
@@ -687,9 +758,12 @@ func findMarkers(chunks []Chunk) []Marker {
 		}
 		markers = append(markers, record.Scan(chunk.Data, 48, 16, markerDecoder(texts))...)
 	}
+	slices.SortFunc(markers, func(a, b Marker) int { return cmp.Compare(a.Position, b.Position) })
 	return markers
 }
 
+// markerDecoder returns a decoder for 48-byte marker records that resolves
+// each marker's text through texts, rejecting markers whose text is missing.
 func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
 	return func(data []byte) (Marker, bool) {
 		var marker Marker
@@ -712,6 +786,7 @@ func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
 	}
 }
 
+// markerRTF extracts the RTF payload of a TxSq chunk.
 func markerRTF(data []byte) string {
 	start := bytes.Index(data, []byte(`{\rtf`))
 	if start < 0 {
@@ -720,8 +795,10 @@ func markerRTF(data []byte) string {
 	return strings.TrimRight(string(data[start:]), "\x00")
 }
 
+// rtfControl matches an RTF control word.
 var rtfControl = regexp.MustCompile(`\\[a-zA-Z]+-?\d* ?`)
 
+// plainRTF reduces an RTF marker body to plain text.
 func plainRTF(rtf string) string {
 	runs := printableRun.FindAllString(rtf, -1)
 	if len(runs) == 0 {

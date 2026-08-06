@@ -38,14 +38,19 @@ type Chord struct {
 // when the project starts in 3/4 or 5/8.
 const projectChordPositionBias = 4 * 960
 
+// chordSequenceID identifies a sequence by the group and sequence numbers
+// carried in every chunk header.
 type chordSequenceID struct{ group, sequence uint32 }
 
+// chordLink places a child chord sequence on the global harmony track.
 type chordLink struct {
 	position         uint32
 	positionFraction uint16
 	sequence         uint32
 }
 
+// findProjectChords decodes the global chord track: every "Global Harmonies"
+// sequence links to child sequences that hold one chord event each.
 func findProjectChords(chunks []Chunk) []Chord {
 	events := make(map[chordSequenceID][]byte)
 	durations := make(map[chordSequenceID]uint32)
@@ -85,14 +90,13 @@ func findProjectChords(chunks []Chunk) []Chord {
 			chords = append(chords, chord)
 		}
 	}
-	inferChordDurations(chords)
+	inferChordDurationsUntil(chords, 0)
 	return chords
 }
 
-func inferChordDurations(chords []Chord) {
-	inferChordDurationsUntil(chords, 0)
-}
-
+// inferChordDurationsUntil fills in zero durations from the distance to the
+// next chord. The final chord extends to end, or keeps its zero duration when
+// end is zero or not past it.
 func inferChordDurationsUntil(chords []Chord, end uint32) {
 	for i := 0; i+1 < len(chords); i++ {
 		if chords[i].Duration == 0 && chords[i+1].Position > chords[i].Position {
@@ -104,6 +108,7 @@ func inferChordDurationsUntil(chords []Chord, end uint32) {
 	}
 }
 
+// decodeChordLink decodes an 80-byte locator on the global harmony track.
 func decodeChordLink(data []byte) (chordLink, bool) {
 	var link chordLink
 	ok := record.Decode(data,
@@ -118,6 +123,9 @@ func decodeChordLink(data []byte) (chordLink, bool) {
 	return link, ok
 }
 
+// decodeChordEvent decodes a 32-byte chord or scale event. It reports false
+// for records whose fixed bytes or masks do not match, since the caller scans
+// unaligned data.
 func decodeChordEvent(data []byte) (Chord, bool) {
 	var chord Chord
 	var rootSpelling, bassSpelling uint8
@@ -169,21 +177,44 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 	return chord, true
 }
 
+// chordSuffixes names an interval mask relative to the root.
+//
+// TODO(logicx): How does the context mask disambiguate names that share a
+// pitch set, such as minor-third vs. sharp-nine?
+var chordSuffixes = map[uint16]string{
+	0x091: "", 0x089: "m", 0x085: "sus2", 0x0a1: "sus4",
+	0x081: "5", 0x111: "aug", 0x049: "dim", 0x291: "6", 0x489: "m7",
+	0x491: "7", 0x891: "maj7", 0x093: " add b9", 0x095: " add 9",
+	0x499: "7(#9)", 0x0b1: " add 11", 0x0d1: "(#11)",
+	0x191: "(b13)", 0x695: "7(9,13)",
+}
+
+// scaleSuffixes names a scale mask relative to the root.
+var scaleSuffixes = map[uint16]string{
+	0x0ab5: " ionian",
+	0x0ad5: " lydian",
+	0x06b5: " mixolydian",
+	0x09b5: " harmonic major",
+	0x06d5: " mixolydian #11",
+	0x05b5: " mixolydian b13",
+	0x05b3: " phrygian dominant",
+	0x09b3: " double harmonic",
+	0x029d: " major blues",
+	0x0593: " klezmer",
+	0x0295: " major pentatonic",
+	0x06db: " half-whole diminished",
+}
+
+// chordName renders a chord or scale as text. It returns an empty name for
+// masks and spellings this package cannot name, which callers treat as
+// "decoded but not displayable".
 func chordName(chord Chord) string {
 	var suffix string
 	var ok bool
 	if chord.Scale {
-		suffix, ok = chordScaleSuffix(chord.ScaleMask)
+		suffix, ok = scaleSuffixes[chord.ScaleMask]
 	} else {
-		// TODO(logicx): How does the context mask disambiguate names that share
-		// a pitch set, such as minor-third vs. sharp-nine?
-		suffix, ok = map[uint16]string{
-			0x091: "", 0x089: "m", 0x085: "sus2", 0x0a1: "sus4",
-			0x081: "5", 0x111: "aug", 0x049: "dim", 0x291: "6", 0x489: "m7",
-			0x491: "7", 0x891: "maj7", 0x093: " add b9", 0x095: " add 9",
-			0x499: "7(#9)", 0x0b1: " add 11", 0x0d1: "(#11)",
-			0x191: "(b13)", 0x695: "7(9,13)",
-		}[chord.IntervalMask]
+		suffix, ok = chordSuffixes[chord.IntervalMask]
 	}
 	root, rootOK := spelledPitchClass(chord.RootPitchClass, chord.RootSpelling)
 	if !ok || !rootOK {
@@ -200,24 +231,9 @@ func chordName(chord Chord) string {
 	return name
 }
 
-func chordScaleSuffix(mask uint16) (string, bool) {
-	suffix, ok := map[uint16]string{
-		0x0ab5: " ionian",
-		0x0ad5: " lydian",
-		0x06b5: " mixolydian",
-		0x09b5: " harmonic major",
-		0x06d5: " mixolydian #11",
-		0x05b5: " mixolydian b13",
-		0x05b3: " phrygian dominant",
-		0x09b3: " double harmonic",
-		0x029d: " major blues",
-		0x0593: " klezmer",
-		0x0295: " major pentatonic",
-		0x06db: " half-whole diminished",
-	}[mask]
-	return suffix, ok
-}
-
+// spelledPitchClass names a pitch class using Logic's spelling code, where 0
+// is double-flat and 4 is double-sharp. It reports false for codes that do not
+// land on a natural note name.
 func spelledPitchClass(pitch, spelling uint8) (string, bool) {
 	naturals := [...]string{"C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"}
 	if pitch > 11 || spelling > 4 {

@@ -50,6 +50,8 @@ func ParsePropertyList(data []byte) (any, error) {
 	return value, nil
 }
 
+// metadataFromValues extracts the known keys, substituting defaults for keys
+// that are missing or of an unexpected type.
 func metadataFromValues(values map[string]any) Metadata {
 	return Metadata{
 		Key:                  metadataString(values["SongKey"], "?"),
@@ -64,6 +66,8 @@ func metadataFromValues(values map[string]any) Metadata {
 	}
 }
 
+// metadataString returns value as a string, or fallback when it is not a
+// non-empty string.
 func metadataString(value any, fallback string) string {
 	s, ok := value.(string)
 	if !ok || s == "" {
@@ -72,6 +76,8 @@ func metadataString(value any, fallback string) string {
 	return s
 }
 
+// metadataFloat returns value as a float64, or zero when it is not a
+// non-negative number.
 func metadataFloat(value any) float64 {
 	switch n := value.(type) {
 	case float64:
@@ -88,6 +94,8 @@ func metadataFloat(value any) float64 {
 	return 0
 }
 
+// metadataUint returns value as a uint64, or fallback when it is not a
+// non-negative integer.
 func metadataUint(value any, fallback uint64) uint64 {
 	switch n := value.(type) {
 	case uint64:
@@ -100,6 +108,7 @@ func metadataUint(value any, fallback uint64) uint64 {
 	return fallback
 }
 
+// metadataArrayLen returns the length of value as an array, or zero.
 func metadataArrayLen(value any) int {
 	items, ok := value.([]any)
 	if !ok {
@@ -108,6 +117,8 @@ func metadataArrayLen(value any) int {
 	return len(items)
 }
 
+// readPropertyLists parses every property list under root, keyed by its
+// slash-separated path relative to root.
 func readPropertyLists(root string) (map[string]any, error) {
 	values := make(map[string]any)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -145,6 +156,8 @@ func readPropertyLists(root string) (map[string]any, error) {
 	return values, nil
 }
 
+// looksLikePropertyList reports whether path is a property list, by extension
+// or by sniffing its leading bytes.
 func looksLikePropertyList(path string) (bool, error) {
 	if strings.EqualFold(filepath.Ext(path), ".plist") {
 		return true, nil

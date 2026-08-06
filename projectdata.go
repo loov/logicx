@@ -52,6 +52,8 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	return p, nil
 }
 
+// parseChunks splits ProjectData into its chunk records. Every chunk is
+// retained, including types this package does not decode.
 func parseChunks(data []byte) ([]Chunk, error) {
 	if len(data) < 24 || !bytes.Equal(data[:4], []byte{0x23, 0x47, 0xc0, 0xab}) {
 		return nil, errors.New("logicx: invalid ProjectData header")
@@ -78,12 +80,16 @@ func parseChunks(data []byte) ([]Chunk, error) {
 	return chunks, nil
 }
 
+// printableRun matches a run of printable ASCII long enough to be a name.
 var printableRun = regexp.MustCompile(`[ -~]{4,}`)
 
+// reverse4 reads a four-character code stored little-endian.
 func reverse4(b []byte) string { return string([]byte{b[3], b[2], b[1], b[0]}) }
 
+// printable4 reports whether b is a four-byte printable code.
 func printable4(b []byte) bool { return len(b) == 4 && printable(b) }
 
+// printable reports whether every byte is printable ASCII.
 func printable(b []byte) bool {
 	for _, c := range b {
 		if c < 0x20 || c > 0x7e {
@@ -93,6 +99,7 @@ func printable(b []byte) bool {
 	return true
 }
 
+// allZero reports whether every byte is zero.
 func allZero(b []byte) bool {
 	for _, c := range b {
 		if c != 0 {

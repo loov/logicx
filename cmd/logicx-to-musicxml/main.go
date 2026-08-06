@@ -13,6 +13,7 @@ import (
 	"github.com/egonelbre/logicx"
 )
 
+// main reads a bundle and writes the score to stdout or -o.
 func main() {
 	output := flag.String("o", "", "output file (default: stdout)")
 	alternative := flag.String("alternative", "", "project alternative (default: first)")
@@ -46,11 +47,14 @@ func main() {
 	}
 }
 
+// fatal reports err and exits.
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "logicx-to-musicxml:", err)
 	os.Exit(1)
 }
 
+// chooseAlternative returns the named alternative, or the first one when no
+// name is given. OpenBundle guarantees at least one alternative.
 func chooseAlternative(alternatives []logicx.Alternative, name string) (logicx.Alternative, error) {
 	if name == "" {
 		return alternatives[0], nil

@@ -92,6 +92,7 @@ func Uint32LE(offset int, value *uint32) Field {
 	}
 }
 
+// at returns the size bytes at offset, reporting false when out of range.
 func at(data []byte, offset, size int) ([]byte, bool) {
 	if offset < 0 || size < 0 || size > len(data) || offset > len(data)-size {
 		return nil, false

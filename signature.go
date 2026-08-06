@@ -10,6 +10,8 @@ import (
 	"github.com/egonelbre/logicx/internal/record"
 )
 
+// projectStartTick is the tick position of bar 1. Logic writes signature
+// events that predate it; they all describe the project's initial signature.
 const projectStartTick = 40 * 960
 
 // TimeSignatureChange is a meter change, including Logic's optional beat
@@ -39,6 +41,9 @@ type KeySignatureChange struct {
 	Raw              [32]byte
 }
 
+// findTimeSignatureChanges collects the meter map, sorted by position. Beat
+// grouping lives in a separate record 40 bytes after the meter record, so this
+// scans by hand rather than through record.Scan.
 func findTimeSignatureChanges(chunks []Chunk) []TimeSignatureChange {
 	var changes []TimeSignatureChange
 	for _, chunk := range chunks {
@@ -64,6 +69,8 @@ func findTimeSignatureChanges(chunks []Chunk) []TimeSignatureChange {
 	return changes
 }
 
+// decodeTimeSignatureChange decodes a 16-byte meter record. The denominator is
+// stored as a power of two.
 func decodeTimeSignatureChange(data []byte) (TimeSignatureChange, bool) {
 	var change TimeSignatureChange
 	var denominatorPower uint8
@@ -86,6 +93,9 @@ func decodeTimeSignatureChange(data []byte) (TimeSignatureChange, bool) {
 	return change, true
 }
 
+// decodeBeatGrouping decodes the composite-meter beat grouping that follows a
+// meter record. Groups are stored last-first and must sum to the numerator;
+// anything else is treated as an unrelated record and yields a nil grouping.
 func decodeBeatGrouping(data []byte, numerator uint8) ([]uint8, [24]byte) {
 	var raw [24]byte
 	if len(data) < len(raw) {
@@ -120,6 +130,7 @@ func decodeBeatGrouping(data []byte, numerator uint8) ([]uint8, [24]byte) {
 	return groups, raw
 }
 
+// findKeySignatureChanges collects the key map, sorted by position.
 func findKeySignatureChanges(chunks []Chunk) []KeySignatureChange {
 	var changes []KeySignatureChange
 	for _, chunk := range chunks {
@@ -133,6 +144,8 @@ func findKeySignatureChanges(chunks []Chunk) []KeySignatureChange {
 	return changes
 }
 
+// decodeKeySignatureChange decodes a 32-byte key record. The low nibble of the
+// code counts fifths from Cb, and bit 0x10 marks a minor key.
 func decodeKeySignatureChange(data []byte) (KeySignatureChange, bool) {
 	var change KeySignatureChange
 	ok := record.Decode(data,
@@ -156,6 +169,7 @@ func decodeKeySignatureChange(data []byte) (KeySignatureChange, bool) {
 	return change, true
 }
 
+// signaturePosition clamps pre-roll signature events onto bar 1.
 func signaturePosition(position uint32) uint32 {
 	if position < projectStartTick {
 		return projectStartTick

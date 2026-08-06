@@ -3,10 +3,11 @@
 package main
 
 import (
+	"cmp"
 	"encoding/xml"
 	"errors"
 	"io"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -14,10 +15,16 @@ import (
 )
 
 const (
+	// ticksPerQuarter is Logic's tick resolution, used directly as the MusicXML
+	// divisions value so durations need no rescaling.
 	ticksPerQuarter = uint32(960)
+	// logicBarOneTick is the tick position of bar 1 in a Logic project.
 	logicBarOneTick = uint32(38_400)
 )
 
+// writeMusicXML renders one project alternative as a MusicXML 4.0 partwise
+// score. Every sequence becomes a part; global markers and the tempo map are
+// attached to the first part only, as MusicXML expects.
 func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	sequences := scoreSequences(alternative.Project)
 	if len(sequences) == 0 {
@@ -73,11 +80,14 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	return encoder.Flush()
 }
 
+// scoreSequences prepares the parts to export. Sequences without notes are
+// voiced from their chords, and the project chord track either joins a part
+// that already plays it or becomes a part of its own.
 func scoreSequences(project logicx.ProjectData) []logicx.MIDISequence {
 	sequences := mergeSequences(project.Sequences)
 	for i := range sequences {
 		if len(sequences[i].Notes) == 0 {
-			sequences[i].Notes = appendChordNotes(nil, sequences[i].Chords)
+			sequences[i].Notes = chordNotes(sequences[i].Chords)
 		}
 	}
 	if len(project.ProjectChords) == 0 {
@@ -88,10 +98,11 @@ func scoreSequences(project logicx.ProjectData) []logicx.MIDISequence {
 		return sequences
 	}
 	chords := logicx.MIDISequence{Name: "Project Chords", Chords: project.ProjectChords}
-	chords.Notes = appendChordNotes(nil, chords.Chords)
+	chords.Notes = chordNotes(chords.Chords)
 	return append(sequences, chords)
 }
 
+// mergeSequences combines the regions of a track into one part, keyed by name.
 func mergeSequences(sequences []logicx.MIDISequence) []logicx.MIDISequence {
 	indexes := make(map[string]int)
 	var merged []logicx.MIDISequence
@@ -108,17 +119,19 @@ func mergeSequences(sequences []logicx.MIDISequence) []logicx.MIDISequence {
 	return merged
 }
 
+// noteKey identifies a sounding note, used to compare chord voicings against
+// notes that a part already contains.
 type noteKey struct {
 	position uint32
 	fraction uint16
 	pitch    uint8
 }
 
-func appendChordNotes(notes []logicx.MIDINote, chords []logicx.Chord) []logicx.MIDINote {
-	seen := make(map[noteKey]bool, len(notes))
-	for _, note := range notes {
-		seen[noteKey{note.Position, note.PositionFraction, note.Pitch}] = true
-	}
+// chordNotes voices chords as notes so that a chords-only part still renders
+// on a staff. Duplicate pitches within a chord are emitted once.
+func chordNotes(chords []logicx.Chord) []logicx.MIDINote {
+	var notes []logicx.MIDINote
+	seen := make(map[noteKey]bool)
 	for i, chord := range chords {
 		duration := chord.Duration
 		if duration == 0 {
@@ -144,6 +157,9 @@ func appendChordNotes(notes []logicx.MIDINote, chords []logicx.Chord) []logicx.M
 	return notes
 }
 
+// chordStaff returns the index of the part that already plays every chord
+// tone, or -1 when no part does. Such a part shows the chord symbols instead
+// of a duplicate chord staff.
 func chordStaff(sequences []logicx.MIDISequence, chords []logicx.Chord) int {
 	var required []noteKey
 	for _, chord := range chords {
@@ -173,6 +189,8 @@ func chordStaff(sequences []logicx.MIDISequence, chords []logicx.Chord) int {
 	return -1
 }
 
+// noteSegment is the part of a note that falls inside one measure. Notes
+// crossing a barline become several tied segments.
 type noteSegment struct {
 	Start, Duration    uint32
 	Pitch              uint8
@@ -185,6 +203,8 @@ type noteSegment struct {
 	TieStart, TieEnd   bool
 }
 
+// measureMap converts tick positions into measure numbers, growing the bar
+// grid on demand and applying meter changes as it goes.
 type measureMap struct {
 	numerator   uint64
 	denominator uint64
@@ -193,9 +213,11 @@ type measureMap struct {
 	durations   []uint32
 }
 
+// newMeasureMap builds a bar grid starting at origin, taking the initial meter
+// from the last signature change at or before origin, else from the metadata.
 func newMeasureMap(origin uint32, metadata logicx.Metadata, changes []logicx.TimeSignatureChange) *measureMap {
-	changes = append([]logicx.TimeSignatureChange(nil), changes...)
-	sort.Slice(changes, func(i, j int) bool { return changes[i].Position < changes[j].Position })
+	changes = slices.Clone(changes)
+	slices.SortFunc(changes, func(a, b logicx.TimeSignatureChange) int { return cmp.Compare(a.Position, b.Position) })
 	numerator, denominator := metadata.TimeSignature[0], metadata.TimeSignature[1]
 	if numerator == 0 || denominator == 0 {
 		numerator, denominator = 4, 4
@@ -213,6 +235,8 @@ func newMeasureMap(origin uint32, metadata logicx.Metadata, changes []logicx.Tim
 	return m
 }
 
+// meterTicks returns the length of one bar, falling back to 4/4 for meters
+// that are absent or too large to represent.
 func meterTicks(numerator, denominator uint64) uint32 {
 	if numerator == 0 || denominator == 0 {
 		return 4 * ticksPerQuarter
@@ -228,7 +252,12 @@ func meterTicks(numerator, denominator uint64) uint32 {
 	return uint32(ticks)
 }
 
+// locate returns the measure index containing position and the tick offset
+// within it. Positions before the map's origin clamp to its first measure.
 func (m *measureMap) locate(position uint32) (int, uint32) {
+	if position < m.starts[0] {
+		return 0, 0
+	}
 	for uint64(position) >= uint64(m.starts[len(m.starts)-1])+uint64(m.durations[len(m.durations)-1]) {
 		start := m.starts[len(m.starts)-1] + m.durations[len(m.durations)-1]
 		numerator, denominator := m.numerator, m.denominator
@@ -248,6 +277,9 @@ func (m *measureMap) locate(position uint32) (int, uint32) {
 	return measure, position - m.starts[measure]
 }
 
+// makePart lays a sequence out over the bar grid. Notes are split at barlines
+// and tied; markers, tempos, chord symbols and signature changes are attached
+// to the measures they fall in.
 func makePart(
 	id string,
 	sequence logicx.MIDISequence,
@@ -359,11 +391,8 @@ func makePart(
 
 	part := xmlPart{ID: id}
 	for i, notes := range byMeasure {
-		sort.Slice(notes, func(i, j int) bool {
-			if notes[i].Start != notes[j].Start {
-				return notes[i].Start < notes[j].Start
-			}
-			return notes[i].Pitch < notes[j].Pitch
+		slices.SortFunc(notes, func(a, b noteSegment) int {
+			return cmp.Or(cmp.Compare(a.Start, b.Start), cmp.Compare(a.Pitch, b.Pitch))
 		})
 		measure := xmlMeasure{Number: i + 1}
 		if i == 0 {
@@ -403,6 +432,8 @@ func makePart(
 	return part
 }
 
+// makeXMLTime renders a meter, using a composite "2+3" beats value when Logic
+// records an explicit beat grouping.
 func makeXMLTime(numerator, denominator uint64, grouping []uint8) xmlTime {
 	if numerator == 0 || denominator == 0 {
 		numerator, denominator = 4, 4
@@ -418,6 +449,8 @@ func makeXMLTime(numerator, denominator uint64, grouping []uint8) xmlTime {
 	return xmlTime{Beats: beats, BeatType: uint64(denominator)}
 }
 
+// musicXMLChordKind maps a MusicXML kind value to the interval mask it
+// describes.
 type musicXMLChordKind struct {
 	Name         string
 	IntervalMask uint16
@@ -442,6 +475,9 @@ var musicXMLChordKinds = [...]musicXMLChordKind{
 	{"suspended-second", 0x085}, {"Tristan", 0x449},
 }
 
+// makeHarmony renders a chord symbol. Chords without a matching MusicXML kind
+// fall back to kind "other" plus explicit degrees, which keeps both the
+// printed text and the pitch content.
 func makeHarmony(chord logicx.Chord, offset uint32) xmlHarmony {
 	if chord.NoChord {
 		empty := ""
@@ -470,6 +506,9 @@ func makeHarmony(chord logicx.Chord, offset uint32) xmlHarmony {
 	return harmony
 }
 
+// harmonyKind returns the MusicXML kind for a chord's interval mask. Kinds
+// that only differ from a pop chord by function are skipped, since a mask
+// alone cannot distinguish them.
 func harmonyKind(chord logicx.Chord) string {
 	if chord.Scale {
 		return "other"
@@ -486,6 +525,9 @@ func harmonyKind(chord logicx.Chord) string {
 	return "other"
 }
 
+// harmonyPitch splits a pitch class and Logic spelling code into a MusicXML
+// step and alteration. Callers must have confirmed the chord is nameable, so
+// that spelling is in range and lands on a natural note name.
 func harmonyPitch(pitch, spelling uint8) (step string, alter *int, name string) {
 	naturals := [...]string{"C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"}
 	value := int(spelling) - 2
@@ -498,7 +540,10 @@ func harmonyPitch(pitch, spelling uint8) (step string, alter *int, name string) 
 	return step, &value, name
 }
 
+// harmonyDegrees lists a chord's tones as scale degrees relative to its root,
+// for kinds MusicXML cannot name.
 func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
+	// Indexed by semitones above the root; index 0 is the root itself.
 	table := [...]struct{ value, alter int }{
 		{}, {9, -1}, {9, 0}, {3, -1}, {3, 0}, {11, 0},
 		{5, -1}, {5, 0}, {13, -1}, {13, 0}, {7, -1}, {7, 0},
@@ -524,6 +569,9 @@ func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
 	return degrees
 }
 
+// measureItems turns the segments of one measure into note elements, moving
+// the MusicXML cursor forward or back between them. Segments that share a
+// start become one chord.
 func measureItems(notes []noteSegment) []xmlMeasureItem {
 	var items []xmlMeasureItem
 	var cursor, previousStart uint32
@@ -543,6 +591,7 @@ func measureItems(notes []noteSegment) []xmlMeasureItem {
 	return items
 }
 
+// makeXMLNote renders one segment, attaching its ties, notations and lyrics.
 func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	// TODO(logicx): Does the chord record preserve spelling for every tone?
 	// Synthesized staff notes currently choose sharps from MIDI pitch alone.
@@ -560,31 +609,35 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 		alter := 1
 		note.Pitch.Alter = &alter
 	}
+	var notations xmlNotations
 	if segment.TieStart {
 		note.Ties = append(note.Ties, xmlTie{Type: "stop"})
-		note.Notations.Tied = append(note.Notations.Tied, xmlTie{Type: "stop"})
+		notations.Tied = append(notations.Tied, xmlTie{Type: "stop"})
 	}
 	if segment.TieEnd {
 		note.Ties = append(note.Ties, xmlTie{Type: "start"})
-		note.Notations.Tied = append(note.Notations.Tied, xmlTie{Type: "start"})
+		notations.Tied = append(notations.Tied, xmlTie{Type: "start"})
 	}
 	for _, slur := range segment.ScoreSlurs {
-		note.Notations.Slurs = append(note.Notations.Slurs, xmlSlur{
+		notations.Slurs = append(notations.Slurs, xmlSlur{
 			Type: string(slur.Type), Number: slur.Number, Placement: string(slur.Placement),
 		})
 	}
-	note.Notations.Articulations = makeXMLArticulations(segment.ScoreArticulations)
+	notations.Articulations = makeXMLArticulations(segment.ScoreArticulations)
 	for _, fermata := range segment.ScoreFermatas {
 		typeName := "upright"
 		if fermata.Inverted {
 			typeName = "inverted"
 		}
-		note.Notations.Fermatas = append(note.Notations.Fermatas, xmlFermata{Type: typeName, Value: "normal"})
+		notations.Fermatas = append(notations.Fermatas, xmlFermata{Type: typeName, Value: "normal"})
 	}
 	for _, arpeggio := range segment.ScoreArpeggios {
-		note.Notations.Arpeggiates = append(note.Notations.Arpeggiates, xmlArpeggiate{Direction: string(arpeggio.Direction)})
+		notations.Arpeggiates = append(notations.Arpeggiates, xmlArpeggiate{Direction: string(arpeggio.Direction)})
 	}
-	note.Notations.Ornaments = makeXMLOrnaments(segment.ScoreOrnaments)
+	notations.Ornaments = makeXMLOrnaments(segment.ScoreOrnaments)
+	if !notations.empty() {
+		note.Notations = &notations
+	}
 	for _, lyric := range segment.Lyrics {
 		number := ""
 		if lyric.Verse != 0 {
@@ -595,6 +648,7 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	return note
 }
 
+// makeXMLOrnaments collects a note's ornaments, or nil when it has none.
 func makeXMLOrnaments(ornaments []logicx.ScoreOrnament) *xmlOrnaments {
 	var result xmlOrnaments
 	for _, ornament := range ornaments {
@@ -622,6 +676,8 @@ func makeXMLOrnaments(ornaments []logicx.ScoreOrnament) *xmlOrnaments {
 	return &result
 }
 
+// makeXMLArticulations collects a note's articulations, or nil when it has
+// none.
 func makeXMLArticulations(articulations []logicx.ScoreArticulation) *xmlArticulations {
 	var result xmlArticulations
 	for _, articulation := range articulations {
@@ -648,10 +704,21 @@ func makeXMLArticulations(articulations []logicx.ScoreArticulation) *xmlArticula
 	return &result
 }
 
-func keyFifths(key string) int {
-	return map[string]int{"CB": -7, "GB": -6, "DB": -5, "AB": -4, "EB": -3, "BB": -2, "F": -1, "C": 0, "G": 1, "D": 2, "A": 3, "E": 4, "B": 5, "F#": 6, "C#": 7}[strings.ToUpper(key)]
+// keyFifthsByName counts fifths from C for each major key name.
+var keyFifthsByName = map[string]int{
+	"CB": -7, "GB": -6, "DB": -5, "AB": -4, "EB": -3, "BB": -2, "F": -1,
+	"C": 0, "G": 1, "D": 2, "A": 3, "E": 4, "B": 5, "F#": 6, "C#": 7,
 }
 
+// keyFifths converts a metadata key name to a MusicXML fifths value,
+// defaulting to C for names it does not know.
+func keyFifths(key string) int {
+	return keyFifthsByName[strings.ToUpper(key)]
+}
+
+// xmlScore is the score-partwise document root. The types below mirror the
+// MusicXML 4.0 elements they are named after; element order within each struct
+// is the order MusicXML requires.
 type xmlScore struct {
 	XMLName  xml.Name    `xml:"score-partwise"`
 	Version  string      `xml:"version,attr"`
@@ -659,20 +726,25 @@ type xmlScore struct {
 	Parts    []xmlPart   `xml:"part"`
 }
 
+// xmlPartList is the part-list element.
 type xmlPartList struct {
 	Parts []xmlScorePart `xml:"score-part"`
 }
 
+// xmlScorePart is a score-part entry in the part list.
 type xmlScorePart struct {
 	ID   string `xml:"id,attr"`
 	Name string `xml:"part-name"`
 }
 
+// xmlPart is a part element holding one staff's measures.
 type xmlPart struct {
 	ID       string       `xml:"id,attr"`
 	Measures []xmlMeasure `xml:"measure"`
 }
 
+// xmlMeasure is a measure element. Items carries the notes and cursor moves,
+// which must keep their relative order.
 type xmlMeasure struct {
 	Number     int              `xml:"number,attr"`
 	Attributes *xmlAttributes   `xml:"attributes,omitempty"`
@@ -681,6 +753,7 @@ type xmlMeasure struct {
 	Items      []xmlMeasureItem `xml:",any"`
 }
 
+// xmlHarmony is a harmony element: one chord symbol.
 type xmlHarmony struct {
 	Placement string             `xml:"placement,attr,omitempty"`
 	Root      xmlHarmonyRoot     `xml:"root"`
@@ -690,48 +763,59 @@ type xmlHarmony struct {
 	Offset    uint32             `xml:"offset"`
 }
 
+// xmlHarmonyRoot is a chord symbol's root.
 type xmlHarmonyRoot struct {
 	Step  xmlHarmonyStep `xml:"root-step"`
 	Alter *int           `xml:"root-alter,omitempty"`
 }
 
+// xmlHarmonyStep is a root-step element. Text overrides the printed text, an
+// empty value suppressing it.
 type xmlHarmonyStep struct {
 	Value string  `xml:",chardata"`
 	Text  *string `xml:"text,attr,omitempty"`
 }
 
+// xmlHarmonyKind is a kind element. Text is the printed chord suffix.
 type xmlHarmonyKind struct {
 	Value string `xml:",chardata"`
 	Text  string `xml:"text,attr,omitempty"`
 }
 
+// xmlHarmonyBass is a chord symbol's slash bass note.
 type xmlHarmonyBass struct {
 	Step  string `xml:"bass-step"`
 	Alter *int   `xml:"bass-alter,omitempty"`
 }
 
+// xmlHarmonyDegree is one added or altered degree of a chord symbol.
 type xmlHarmonyDegree struct {
 	Value int    `xml:"degree-value"`
 	Alter int    `xml:"degree-alter"`
 	Type  string `xml:"degree-type"`
 }
 
+// xmlAttributes is an attributes element: divisions, key and meter.
 type xmlAttributes struct {
 	Divisions uint32   `xml:"divisions,omitempty"`
 	Key       *xmlKey  `xml:"key,omitempty"`
 	Time      *xmlTime `xml:"time,omitempty"`
 }
 
+// xmlKey is a key element, with fifths counted from C.
 type xmlKey struct {
 	Fifths int    `xml:"fifths"`
 	Mode   string `xml:"mode,omitempty"`
 }
 
+// xmlTime is a time element. Beats is a string so composite meters can be
+// written as "2+3".
 type xmlTime struct {
 	Beats    string `xml:"beats"`
 	BeatType uint64 `xml:"beat-type"`
 }
 
+// xmlDirection is a direction element: a marker, tempo or other instruction.
 type xmlDirection struct {
 	Placement string           `xml:"placement,attr,omitempty"`
 	Type      xmlDirectionType `xml:"direction-type"`
@@ -739,27 +823,34 @@ type xmlDirection struct {
 	Sound     *xmlSound        `xml:"sound,omitempty"`
 }
 
+// xmlDirectionType is the direction-type element's content.
 type xmlDirectionType struct {
 	Metronome *xmlMetronome `xml:"metronome,omitempty"`
 	Rehearsal string        `xml:"rehearsal,omitempty"`
 	Words     string        `xml:"words,omitempty"`
 }
 
+// xmlMetronome is a printed metronome mark.
 type xmlMetronome struct {
 	BeatUnit  string  `xml:"beat-unit"`
 	PerMinute float64 `xml:"per-minute"`
 }
 
+// xmlSound is a sound element carrying playback tempo.
 type xmlSound struct {
 	Tempo float64 `xml:"tempo,attr"`
 }
 
+// xmlMeasureItem is one of the order-sensitive measure children, encoded by
+// MarshalXML as whichever field is set.
 type xmlMeasureItem struct {
 	Forward *xmlMove `xml:"forward,omitempty"`
 	Backup  *xmlMove `xml:"backup,omitempty"`
 	Note    *xmlNote `xml:"note,omitempty"`
 }
 
+// MarshalXML writes whichever of the alternatives is set, so that forward,
+// backup and note elements keep their document order within a measure.
 func (item xmlMeasureItem) MarshalXML(encoder *xml.Encoder, _ xml.StartElement) error {
 	switch {
 	case item.Forward != nil:
@@ -771,30 +862,36 @@ func (item xmlMeasureItem) MarshalXML(encoder *xml.Encoder, _ xml.StartElement) 
 	}
 }
 
+// xmlMove is a forward or backup element moving the measure cursor.
 type xmlMove struct {
 	Duration uint32 `xml:"duration"`
 }
 
+// xmlNote is a note element. Chord is set on every note but the first of a
+// simultaneity.
 type xmlNote struct {
-	Chord     *struct{}    `xml:"chord,omitempty"`
-	Pitch     xmlPitch     `xml:"pitch"`
-	Duration  uint32       `xml:"duration"`
-	Ties      []xmlTie     `xml:"tie,omitempty"`
-	Voice     int          `xml:"voice"`
-	Notations xmlNotations `xml:"notations,omitempty"`
-	Lyrics    []xmlLyric   `xml:"lyric,omitempty"`
+	Chord     *struct{}     `xml:"chord,omitempty"`
+	Pitch     xmlPitch      `xml:"pitch"`
+	Duration  uint32        `xml:"duration"`
+	Ties      []xmlTie      `xml:"tie,omitempty"`
+	Voice     int           `xml:"voice"`
+	Notations *xmlNotations `xml:"notations,omitempty"`
+	Lyrics    []xmlLyric    `xml:"lyric,omitempty"`
 }
 
+// xmlPitch is a note's pitch, with Alter in semitones.
 type xmlPitch struct {
 	Step   string `xml:"step"`
 	Alter  *int   `xml:"alter,omitempty"`
 	Octave int    `xml:"octave"`
 }
 
+// xmlTie is a tie or tied element.
 type xmlTie struct {
 	Type string `xml:"type,attr"`
 }
 
+// xmlNotations is a notations element gathering a note's markings.
 type xmlNotations struct {
 	Tied          []xmlTie          `xml:"tied,omitempty"`
 	Slurs         []xmlSlur         `xml:"slur,omitempty"`
@@ -804,21 +901,32 @@ type xmlNotations struct {
 	Ornaments     *xmlOrnaments     `xml:"ornaments,omitempty"`
 }
 
+// empty reports whether the notations carry nothing, so the element can be
+// left out rather than written as an empty tag on every plain note.
+func (n xmlNotations) empty() bool {
+	return len(n.Tied) == 0 && len(n.Slurs) == 0 && len(n.Fermatas) == 0 &&
+		len(n.Arpeggiates) == 0 && n.Articulations == nil && n.Ornaments == nil
+}
+
+// xmlSlur is a slur endpoint.
 type xmlSlur struct {
 	Type      string `xml:"type,attr"`
 	Number    uint8  `xml:"number,attr,omitempty"`
 	Placement string `xml:"placement,attr,omitempty"`
 }
 
+// xmlFermata is a fermata element.
 type xmlFermata struct {
 	Type  string `xml:"type,attr,omitempty"`
 	Value string `xml:",chardata"`
 }
 
+// xmlArpeggiate is an arpeggiate element.
 type xmlArpeggiate struct {
 	Direction string `xml:"direction,attr,omitempty"`
 }
 
+// xmlArticulations is an articulations element.
 type xmlArticulations struct {
 	Accent        *struct{}        `xml:"accent,omitempty"`
 	StrongAccent  *xmlStrongAccent `xml:"strong-accent,omitempty"`
@@ -827,10 +935,12 @@ type xmlArticulations struct {
 	Staccatissimo *struct{}        `xml:"staccatissimo,omitempty"`
 }
 
+// xmlStrongAccent is a strong-accent element, whose type gives its direction.
 type xmlStrongAccent struct {
 	Type string `xml:"type,attr,omitempty"`
 }
 
+// xmlOrnaments is an ornaments element.
 type xmlOrnaments struct {
 	TrillMark            *struct{} `xml:"trill-mark,omitempty"`
 	Turn                 *struct{} `xml:"turn,omitempty"`
@@ -841,6 +951,7 @@ type xmlOrnaments struct {
 	Tremolo              *int      `xml:"tremolo,omitempty"`
 }
 
+// xmlLyric is a lyric element. Number is the verse number, if any.
 type xmlLyric struct {
 	Number string `xml:"number,attr,omitempty"`
 	Text   string `xml:"text"`
