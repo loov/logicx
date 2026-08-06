@@ -19,21 +19,26 @@ func TestOpenBundle_ParsesBinaryMetadataAndInstrument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A channel strip is one AuCO chunk with its record at a fixed offset.
-	payload := make([]byte, channelStripRecord)
+	// A channel strip is one AuCO chunk with its record at a fixed offset, and
+	// each of its plug-ins is an AuCU chunk naming the same strip.
+	const strip = 7
+	stripPayload := make([]byte, channelStripRecord)
 	track := append([]byte{0x20}, []byte("Inst 1")...)
 	track = append(track, make([]byte, 16-len(track))...)
 	track = append(track, []byte{0x29, 0, 0xf7, 0xc5, 1, 0, 0, 0}...)
-	payload = append(payload, track...)
-	payload = append(payload, []byte("Pigments\x00utrAumua1taK")...)
+	stripPayload = append(stripPayload, track...)
+
+	pluginPayload := make([]byte, pluginRecordSize)
+	binary.LittleEndian.PutUint16(pluginPayload[pluginChainOffset:], chainAudio)
+	binary.LittleEndian.PutUint16(pluginPayload[pluginSlotOffset:], 0)
+	copy(pluginPayload[pluginSetting:], "#default.pst")
+	copy(pluginPayload[pluginName:], "Pigments")
+	copy(pluginPayload[pluginManufacturer:], "utrAumua1taK")
+
 	data := make([]byte, 24)
 	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})
-	chunkHeader := make([]byte, chunkHeaderSize)
-	copy(chunkHeader, "OCuA")
-	copy(chunkHeader[channelStripHeaderStart:], channelStripVariant)
-	binary.LittleEndian.PutUint64(chunkHeader[28:], uint64(len(payload)))
-	data = append(data, chunkHeader...)
-	data = append(data, payload...)
+	data = appendAudioChunk(data, "OCuA", channelStripVariant, strip, stripPayload)
+	data = appendAudioChunk(data, "UCuA", pluginVariant, strip, pluginPayload)
 	if err := os.WriteFile(filepath.Join(dir, "ProjectData"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -506,6 +511,56 @@ func TestFindTracks_IncludesOutputChannelStrips(t *testing.T) {
 	}
 }
 
+func TestFindAudioUnits_DecodesChainsSlotsAndBuiltins(t *testing.T) {
+	var inst4 Track
+	for _, track := range parseFixtureProject(t, "plugins.logicx").Tracks {
+		if track.Name == "Inst 4" {
+			inst4 = track
+		}
+	}
+	if inst4.Instrument == nil {
+		t.Fatal("Inst 4 has no instrument")
+	}
+	if got := inst4.Instrument; got.Name != "E-Piano" || !got.Builtin() || got.Setting != "#Custom#" {
+		t.Errorf("instrument = %+v", got)
+	}
+	if len(inst4.MIDIFX) != 1 || inst4.MIDIFX[0].Name != "Arpeggiator" {
+		t.Errorf("midi fx = %+v", inst4.MIDIFX)
+	}
+	// Inserts 2 to 4 are empty, so the slot numbers have a gap.
+	if len(inst4.AudioFX) != 2 ||
+		inst4.AudioFX[0].Name != "Channel EQ" || inst4.AudioFX[0].Slot != 1 ||
+		inst4.AudioFX[1].Name != "Compressor" || inst4.AudioFX[1].Slot != 5 {
+		t.Errorf("inserts = %+v", inst4.AudioFX)
+	}
+}
+
+func TestFindAudioUnits_DecodesThirdPartyComponentDescription(t *testing.T) {
+	var inst3 Track
+	for _, track := range parseFixtureProject(t, "plugins.logicx").Tracks {
+		if track.Name == "Inst 3" {
+			inst3 = track
+		}
+	}
+	unit := inst3.Instrument
+	if unit == nil || unit.Fingerprint() != "aumu/FOne/FabF" || unit.Builtin() {
+		t.Fatalf("instrument = %+v", unit)
+	}
+}
+
+func TestFindAudioUnits_EmptyStripHasNoPlugins(t *testing.T) {
+	for _, track := range parseFixtureProject(t, "plugins.logicx").Tracks {
+		if track.Name != "Inst 1" {
+			continue
+		}
+		if track.Instrument != nil || len(track.MIDIFX) != 0 || len(track.AudioFX) != 0 {
+			t.Fatalf("Inst 1 = %+v", track)
+		}
+		return
+	}
+	t.Fatal("Inst 1 not found")
+}
+
 func parseFixtureProject(t *testing.T, name string) ProjectData {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name, "Alternatives", "000", "ProjectData"))
@@ -517,6 +572,17 @@ func parseFixtureProject(t *testing.T, name string) ProjectData {
 		t.Fatal(err)
 	}
 	return project
+}
+
+// appendAudioChunk appends an audio configuration chunk of the given header
+// variant, belonging to the numbered channel strip.
+func appendAudioChunk(data []byte, descriptor string, variant []byte, strip uint16, payload []byte) []byte {
+	header := make([]byte, chunkHeaderSize)
+	copy(header, descriptor)
+	copy(header[channelStripHeaderStart:], variant)
+	binary.LittleEndian.PutUint16(header[14:], strip)
+	binary.LittleEndian.PutUint64(header[28:], uint64(len(payload)))
+	return append(append(data, header...), payload...)
 }
 
 func appendChunk(data []byte, descriptor string, payload []byte) []byte {

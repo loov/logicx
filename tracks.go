@@ -4,19 +4,35 @@ package logicx
 
 import (
 	"bytes"
-	"regexp"
-	"sort"
+	"cmp"
+	"encoding/binary"
+	"slices"
 	"strings"
 )
 
-// AudioUnit identifies an Audio Unit found in a channel strip.
+// AudioUnit is one plug-in instance in a channel strip. Slot is its position
+// within its own chain: on the audio chain the instrument sits at slot zero
+// and the inserts are numbered from one, while MIDI effects number from zero.
+// Slots left empty have no record at all, so the numbering has gaps.
+//
+// Logic's built-in plug-ins carry Emagic's manufacturer code and leave Type
+// and Subtype empty, so Name identifies them. Third-party plug-ins fill in the
+// full Audio Unit component description.
 type AudioUnit struct {
 	Name         string
 	Type         string
 	Subtype      string
 	Manufacturer string
+	Setting      string
+	Slot         uint16
 	Offset       int
+	strip        uint16
+	midi         bool
 }
+
+// Builtin reports whether the plug-in ships with Logic rather than being an
+// installed Audio Unit component.
+func (a AudioUnit) Builtin() bool { return a.Manufacturer == emagic && a.Type == "" }
 
 // Fingerprint returns the Audio Unit type, subtype, and manufacturer tuple.
 func (a AudioUnit) Fingerprint() string {
@@ -54,31 +70,92 @@ type Track struct {
 	Instrument *AudioUnit
 	MIDIFX     []AudioUnit
 	AudioFX    []AudioUnit
+	strip      uint16
 }
 
-// htmlTag matches the markup Logic embeds in some plug-in display names.
-var htmlTag = regexp.MustCompile(`<[^>]+>`)
+// Plug-in instances are stored one per chunk, sharing a chunk type with other
+// audio configuration data. The header variant selects them and the header's
+// trailing field names the channel strip they belong to, so no plug-in has to
+// be located by searching or matched to a strip by proximity.
+const (
+	pluginChunk        = "AuCU"
+	pluginChainOffset  = 4
+	pluginSlotOffset   = 6
+	pluginSetting      = 14
+	pluginSettingSize  = 64
+	pluginName         = 120
+	pluginNameSize     = 12
+	pluginManufacturer = 132
+	pluginType         = 136
+	pluginSubtype      = 140
+	pluginRecordSize   = 144
+)
 
-// findAudioUnits scans for Audio Unit component descriptions, which appear as
-// three adjacent printable four-character codes with a known type in the
-// middle. The scan is byte-wise because channel strips are not chunk-aligned.
-func findAudioUnits(data []byte) []AudioUnit {
+// pluginVariant marks an AuCU chunk as a plug-in instance.
+var pluginVariant = []byte{0x05, 0x00, 0x0e, 0x00}
+
+// emagic is the manufacturer code on every plug-in that ships with Logic.
+const emagic = "EMAG"
+
+// Chains within a channel strip. Logic keeps the instrument and the audio
+// inserts in one chain and the MIDI effects in another. The remaining chains
+// hold the strip's setting name and its interface state rather than plug-ins.
+const (
+	chainAudio  = 1
+	chainMIDIFX = 2
+)
+
+// findAudioUnits decodes one plug-in instance per chunk, in file order.
+func findAudioUnits(chunks []Chunk) []AudioUnit {
 	var found []AudioUnit
-	for off := 4; off+8 <= len(data); off++ {
-		marker := string(data[off : off+4])
-		if marker != "umua" && marker != "fmua" && marker != "imua" && marker != "xfua" {
+	for _, chunk := range chunks {
+		if chunk.Type != pluginChunk || !bytes.Equal(chunk.Header[4:8], pluginVariant) ||
+			len(chunk.Data) < pluginRecordSize {
 			continue
 		}
-		manufacturer, typ, subtype := data[off-4:off], data[off:off+4], data[off+4:off+8]
-		if !printable4(manufacturer) || !printable4(typ) || !printable4(subtype) {
+		chain := binary.LittleEndian.Uint16(chunk.Data[pluginChainOffset:])
+		if chain != chainAudio && chain != chainMIDIFX {
 			continue
 		}
-		found = append(found, AudioUnit{
-			Name: extractName(data, off), Type: reverse4(typ), Subtype: reverse4(subtype),
-			Manufacturer: reverse4(manufacturer), Offset: off,
-		})
+		unit := AudioUnit{
+			Name:         cString(chunk.Data[pluginName : pluginName+pluginNameSize]),
+			Type:         componentCode(chunk.Data[pluginType:pluginSubtype]),
+			Subtype:      componentCode(chunk.Data[pluginSubtype:pluginRecordSize]),
+			Manufacturer: componentCode(chunk.Data[pluginManufacturer:pluginType]),
+			Setting:      cString(chunk.Data[pluginSetting : pluginSetting+pluginSettingSize]),
+			Slot:         binary.LittleEndian.Uint16(chunk.Data[pluginSlotOffset:]),
+			Offset:       chunk.Offset,
+			strip:        binary.LittleEndian.Uint16(chunk.Header[14:]),
+		}
+		if unit.Name == "" && unit.Manufacturer == "" {
+			continue
+		}
+		unit.midi = chain == chainMIDIFX
+		found = append(found, unit)
 	}
 	return found
+}
+
+// cString reads a NUL-padded name, rejecting anything not printable.
+func cString(b []byte) string {
+	if zero := bytes.IndexByte(b, 0); zero >= 0 {
+		b = b[:zero]
+	}
+	if !printable(b) {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// componentCode reads a four-character code, which is empty when unset.
+func componentCode(b []byte) string {
+	if allZero(b) {
+		return ""
+	}
+	if !printable4(b) {
+		return ""
+	}
+	return reverse4(b)
 }
 
 // Channel strips are stored one per chunk. The chunk type is shared with other
@@ -125,34 +202,34 @@ func findTracks(chunks []Chunk) []Track {
 			Name: name, Kind: trackKind(descriptor),
 			Offset: chunk.Offset + chunkHeaderSize + channelStripRecord,
 			Active: descriptor[2]&0x04 != 0 || descriptor[4] != 0,
+			strip:  binary.LittleEndian.Uint16(chunk.Header[14:]),
 		})
 	}
 	return tracks
 }
 
-// assignAudioUnits attaches each Audio Unit to the nearest preceding track.
-// Both slices come from findTracks and findAudioUnits, so both are sorted by
-// offset.
+// assignAudioUnits attaches each plug-in to the channel strip named in its
+// chunk header. Within a strip the instrument occupies slot zero of the audio
+// chain and the inserts follow it, so a chain with gaps keeps its numbering.
 func assignAudioUnits(tracks []Track, units []AudioUnit) {
-	if len(tracks) == 0 {
-		return
-	}
+	byStrip := make(map[uint16][]AudioUnit, len(tracks))
 	for _, unit := range units {
-		i := sort.Search(len(tracks), func(i int) bool { return tracks[i].Offset > unit.Offset }) - 1
-		if i < 0 {
-			continue
-		}
+		byStrip[unit.strip] = append(byStrip[unit.strip], unit)
+	}
+	for i := range tracks {
 		track := &tracks[i]
-		switch unit.Type {
-		case "aumu":
-			if track.Kind == TrackKindInstrument && track.Instrument == nil {
+		strip := byStrip[track.strip]
+		slices.SortFunc(strip, func(a, b AudioUnit) int { return cmp.Compare(a.Slot, b.Slot) })
+		for _, unit := range strip {
+			switch {
+			case unit.midi:
+				track.MIDIFX = append(track.MIDIFX, unit)
+			case unit.Slot == 0 && track.Kind == TrackKindInstrument && track.Instrument == nil:
 				u := unit
 				track.Instrument = &u
+			default:
+				track.AudioFX = append(track.AudioFX, unit)
 			}
-		case "aumf", "aumi":
-			track.MIDIFX = append(track.MIDIFX, unit)
-		default:
-			track.AudioFX = append(track.AudioFX, unit)
 		}
 	}
 }
@@ -179,22 +256,4 @@ func trackKind(d []byte) TrackKind {
 	default:
 		return TrackKindUnknown
 	}
-}
-
-// extractName returns the last plausible printable run before off, which is
-// where Logic stores the plug-in's display name.
-func extractName(data []byte, off int) string {
-	start := max(0, off-200)
-	name := "<unknown>"
-	for _, run := range printableRun.FindAll(data[start:off], -1) {
-		s := string(run)
-		if len(s) <= 4 || strings.Contains(s, "$class") || strings.Contains(s, "NS.") || strings.Contains(s, "bplist") || strings.Contains(s, "WNS.") {
-			continue
-		}
-		s = strings.TrimSpace(htmlTag.ReplaceAllString(s, ""))
-		if len(s) >= 4 {
-			name = s
-		}
-	}
-	return name
 }

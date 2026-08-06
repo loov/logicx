@@ -45,7 +45,7 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	var header [24]byte
 	copy(header[:], data[:24])
 	p := ProjectData{
-		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(data),
+		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(chunks),
 		Tracks: findTracks(chunks), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
 		TempoChanges:   findTempoChanges(chunks),
 		TimeSignatures: findTimeSignatureChanges(chunks), KeySignatures: findKeySignatureChanges(chunks),

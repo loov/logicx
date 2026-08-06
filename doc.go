@@ -13,8 +13,21 @@
 // its payload. Every chunk is preserved in [ProjectData.Chunks], including the
 // many types this package does not decode.
 //
-// Two chunk types carry most of what this package reads. "AuCO" holds one
-// channel strip per chunk, and "EvSq" holds an event sequence.
+// Three chunk types carry most of what this package reads. "AuCO" holds one
+// channel strip per chunk, "AuCU" one plug-in instance, and "EvSq" an event
+// sequence.
+//
+// # Channel strips
+//
+// A plug-in names its channel strip in its own chunk header, so a strip and
+// its chain are related explicitly rather than by their order in the file. The
+// plug-in's record gives the chain it belongs to — the instrument and audio
+// inserts in one, the MIDI effects in another — and its slot within that
+// chain. Empty slots have no chunk at all, so slot numbers have gaps.
+//
+// Plug-ins that ship with Logic carry Emagic's manufacturer code and no Audio
+// Unit type or subtype, and are identified by name; third-party plug-ins carry
+// the full component description. See [AudioUnit].
 //
 // # Event sequences
 //
