@@ -12,7 +12,8 @@ import (
 
 // Chord is a timed harmony recovered from a region or the project chord lane.
 // Pitches contains MIDI note numbers. IntervalMask is relative to
-// RootPitchClass; spelling values and Raw preserve Logic's undocumented codes.
+// RootPitchClass. ScaleMask is the scale for scale events and the harmonic
+// context for chord events; spelling values and Raw preserve Logic's codes.
 type Chord struct {
 	Position         uint32
 	PositionFraction uint16
@@ -33,9 +34,8 @@ type Chord struct {
 	Raw              []byte
 }
 
-// ponytail: the fixture's link locators precede project positions by one
-// fixed 4/4 bar. TODO(logicx): Is the bias fixed, or derived from the project
-// start or time signature?
+// Logic's chord-link locators precede project positions by 3840 ticks even
+// when the project starts in 3/4 or 5/8.
 const projectChordPositionBias = 4 * 960
 
 type chordSequenceID struct{ group, sequence uint32 }
@@ -48,21 +48,22 @@ type chordLink struct {
 
 func findProjectChords(chunks []Chunk) []Chord {
 	events := make(map[chordSequenceID][]byte)
+	durations := make(map[chordSequenceID]uint32)
 	for _, chunk := range chunks {
-		if chunk.Type != "EvSq" {
-			continue
-		}
 		id := chordSequenceID{
 			group:    binary.LittleEndian.Uint32(chunk.Header[6:10]),
 			sequence: binary.LittleEndian.Uint32(chunk.Header[10:14]),
 		}
-		events[id] = chunk.Data
+		switch {
+		case chunk.Type == "EvSq":
+			events[id] = chunk.Data
+		case chunk.Type == "MSeq" && len(chunk.Data) >= 94 && sequenceName(chunk.Data) == "MIDI Region":
+			durations[id] = binary.LittleEndian.Uint32(chunk.Data[90:94])
+		}
 	}
 
 	var chords []Chord
 	for _, chunk := range chunks {
-		// TODO(logicx): How are region-owned harmony sequences linked back to
-		// their MIDI regions?
 		if chunk.Type != "MSeq" || sequenceName(chunk.Data) != "Global Harmonies" {
 			continue
 		}
@@ -79,18 +80,23 @@ func findProjectChords(chunks []Chunk) []Chord {
 			chord := decoded[0]
 			chord.Position = link.position + projectChordPositionBias
 			chord.PositionFraction = link.positionFraction
+			chord.Duration = durations[chordSequenceID{group, link.sequence}]
 			chord.SequenceID = link.sequence
 			chords = append(chords, chord)
 		}
 	}
-	// TODO(logicx): Where is the stored chord length, especially for the final
-	// chord, gaps, or overlaps?
+	inferChordDurations(chords)
+	return chords
+}
+
+func inferChordDurations(chords []Chord) {
+	// TODO(logicx): Inline region chords have no child-sequence duration; how
+	// far does their final chord extend after region clipping or looping?
 	for i := 0; i+1 < len(chords); i++ {
-		if chords[i+1].Position > chords[i].Position {
+		if chords[i].Duration == 0 && chords[i+1].Position > chords[i].Position {
 			chords[i].Duration = chords[i+1].Position - chords[i].Position
 		}
 	}
-	return chords
 }
 
 func decodeChordLink(data []byte) (chordLink, bool) {
@@ -110,9 +116,11 @@ func decodeChordLink(data []byte) (chordLink, bool) {
 func decodeChordEvent(data []byte) (Chord, bool) {
 	var chord Chord
 	var rootSpelling, bassSpelling uint8
-	if !record.Decode(data,
+	if len(data) < 16 || data[15] > 1 || !record.Decode(data,
 		record.Equal(0, 0x70, 0, 0, 0),
-		record.Equal(12, 0x67, 0, 0, 1),
+		record.Uint16LE(2, &chord.PositionFraction),
+		record.Uint32LE(4, &chord.Position),
+		record.Equal(12, 0x67, 0, 0),
 		record.Uint16LE(16, &chord.IntervalMask),
 		record.Uint8(18, &bassSpelling),
 		record.Uint8(19, &chord.BassPitchClass),
@@ -132,15 +140,9 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 		return Chord{}, false
 	}
 	chord.Scale = chord.Attributes&0x80 == 0
-	if chord.Scale {
-		chord.ScaleMask = uint16(chord.Attributes>>16) & 0x0fff
-	}
-	// TODO(logicx): What do the remaining attribute bits encode besides the
-	// chord/scale flag, pitch mask, and root spelling?
+	chord.ScaleMask = uint16(chord.Attributes>>16) & 0x0fff
 	chord.RootSpelling = rootSpelling
-	// TODO(logicx): Do altered and non-chord bass notes use the same spelling
-	// range and pitch-class field?
-	chord.HasBass = bassSpelling <= 3 && chord.BassPitchClass <= 11
+	chord.HasBass = bassSpelling <= 4 && chord.BassPitchClass <= 11
 	if chord.HasBass {
 		chord.BassSpelling = bassSpelling
 	}
@@ -163,13 +165,16 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 }
 
 func chordName(chord Chord) string {
-	suffix, ok := chordScaleSuffix(chord.ScaleMask)
-	if !ok {
-		// TODO(logicx): Which raw field disambiguates names that share a pitch
-		// set, such as minor-third vs. sharp-nine or dominant vs. German sixth?
+	var suffix string
+	var ok bool
+	if chord.Scale {
+		suffix, ok = chordScaleSuffix(chord.ScaleMask)
+	} else {
+		// TODO(logicx): How does the context mask disambiguate names that share
+		// a pitch set, such as minor-third vs. sharp-nine?
 		suffix, ok = map[uint16]string{
 			0x091: "", 0x089: "m", 0x085: "sus2", 0x0a1: "sus4",
-			0x081: "5", 0x111: "aug", 0x049: "dim", 0x291: "6",
+			0x081: "5", 0x111: "aug", 0x049: "dim", 0x291: "6", 0x489: "m7",
 			0x491: "7", 0x891: "maj7", 0x093: " add b9", 0x095: " add 9",
 			0x499: "7(#9)", 0x0b1: " add 11", 0x0d1: "(#11)",
 			0x191: "(b13)", 0x695: "7(9,13)",
@@ -195,9 +200,7 @@ func chordScaleSuffix(mask uint16) (string, bool) {
 		0x0ab5: " ionian",
 		0x0ad5: " lydian",
 		0x06b5: " mixolydian",
-		// TODO(logicx): Why does Logic label 0x9b5 "harmonic minor" instead
-		// of using the theoretical 0x9ad mask?
-		0x09b5: " harmonic minor",
+		0x09b5: " harmonic major",
 		0x06d5: " mixolydian #11",
 		0x05b5: " mixolydian b13",
 		0x05b3: " phrygian dominant",
@@ -217,7 +220,6 @@ func spelledPitchClass(pitch, spelling uint8) (string, bool) {
 	}
 	alter := int(spelling) - 2
 	name := naturals[(int(pitch)-alter+12)%12]
-	// TODO(logicx): Confirm spelling code 4 as double-sharp with a fixture.
 	accidental := [...]string{"bb", "b", "", "#", "##"}
 	return name + accidental[spelling], name != ""
 }

@@ -147,7 +147,8 @@ func TestParseProjectData_ProjectChordsMatchMarkerOracle(t *testing.T) {
 		markers[marker.Position] = marker.Name
 	}
 	for _, chord := range project.ProjectChords {
-		if got := markers[chord.Position]; got != chord.Name {
+		got := markers[chord.Position]
+		if got != chord.Name {
 			t.Errorf("chord at %d = %q, marker = %q", chord.Position, chord.Name, got)
 		}
 	}
@@ -172,6 +173,96 @@ func TestParseProjectData_ProjectChordsMatchMarkerOracle(t *testing.T) {
 		!slices.Equal(last.Pitches, []uint8{63, 67, 70}) {
 		t.Fatalf("last chord = %+v", last)
 	}
+}
+
+func TestParseProjectData_ChordSpellingIncludesDoubleSharpsAndBass(t *testing.T) {
+	project := parseFixtureProject(t, "chord-spelling.logicx")
+	if len(project.ProjectChords) != 30 {
+		t.Fatalf("project chords = %d, want 30", len(project.ProjectChords))
+	}
+	root := project.ProjectChords[0]
+	if root.Name != "F##" || root.RootPitchClass != 7 || root.RootSpelling != 4 {
+		t.Fatalf("double-sharp root = %+v", root)
+	}
+	bass := project.ProjectChords[1]
+	if bass.Name != "C/F##" || !bass.HasBass || bass.BassPitchClass != 7 || bass.BassSpelling != 4 {
+		t.Fatalf("double-sharp bass = %+v", bass)
+	}
+	minorSeventh := project.ProjectChords[5]
+	if minorSeventh.Name != "G##m7" || minorSeventh.IntervalMask != 0x489 || minorSeventh.ScaleMask != 0x5ad {
+		t.Fatalf("minor seventh = %+v", minorSeventh)
+	}
+}
+
+func TestParseProjectData_ScaleMask9B5IsHarmonicMajor(t *testing.T) {
+	project := parseFixtureProject(t, "chord-scales.logicx")
+	if len(project.ProjectChords) != 13 {
+		t.Fatalf("project chords = %d, want 13", len(project.ProjectChords))
+	}
+	chord := project.ProjectChords[3]
+	if chord.Name != "C harmonic major" || !chord.Scale || chord.ScaleMask != 0x9b5 {
+		t.Fatalf("harmonic major = %+v", chord)
+	}
+}
+
+func TestParseProjectData_ProjectChordBiasIgnoresTimeSignature(t *testing.T) {
+	tests := []struct {
+		name           string
+		secondPosition uint32
+	}{
+		{"chord-position-3-4.logicx", 41_280},
+		{"chord-position-5-8.logicx", 40_800},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			project := parseFixtureProject(t, test.name)
+			if len(project.ProjectChords) != 2 || project.ProjectChords[0].Position != 38_400 || project.ProjectChords[1].Position != test.secondPosition {
+				t.Fatalf("project chords = %+v", project.ProjectChords)
+			}
+		})
+	}
+}
+
+func TestParseProjectData_ProjectChordDurationComesFromChildSequence(t *testing.T) {
+	project := parseFixtureProject(t, "chord-duration.logicx")
+	want := []uint32{960, 960, 960, 960, 7_680, 5_280}
+	got := make([]uint32, len(project.ProjectChords))
+	for i, chord := range project.ProjectChords {
+		got[i] = chord.Duration
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("chord durations = %v, want %v", got, want)
+	}
+}
+
+func TestParseProjectData_RegionChordsStayWithMIDISequence(t *testing.T) {
+	project := parseFixtureProject(t, "chord-regions.logicx")
+	if len(project.Sequences) != 2 {
+		t.Fatalf("sequences = %+v", project.Sequences)
+	}
+	want := []string{"Aaug", "Ab/C", "Gm7", "Db7", "C7"}
+	for _, sequence := range project.Sequences {
+		got := make([]string, len(sequence.Chords))
+		for i, chord := range sequence.Chords {
+			got[i] = chord.Name
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("sequence %q chords = %q, want %q", sequence.Name, got, want)
+		}
+	}
+}
+
+func parseFixtureProject(t *testing.T, name string) ProjectData {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name, "Alternatives", "000", "ProjectData"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := ParseProjectData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project
 }
 
 func appendChunk(data []byte, descriptor string, payload []byte) []byte {

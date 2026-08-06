@@ -67,7 +67,9 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 func scoreSequences(project logicx.ProjectData) []logicx.MIDISequence {
 	sequences := mergeSequences(project.Sequences)
 	for i := range sequences {
-		sequences[i].Notes = appendChordNotes(sequences[i].Notes, sequences[i].Chords)
+		if len(sequences[i].Notes) == 0 {
+			sequences[i].Notes = appendChordNotes(nil, sequences[i].Chords)
+		}
 	}
 	if len(project.ProjectChords) == 0 {
 		return sequences

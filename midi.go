@@ -63,8 +63,10 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		if len(notes) == 0 {
 			continue
 		}
+		chords := record.Scan(chunk.Data, 32, 16, decodeChordEvent)
+		inferChordDurations(chords)
 		sequences = append(sequences, MIDISequence{
-			Name: name, ChunkOffset: chunk.Offset, Notes: notes,
+			Name: name, ChunkOffset: chunk.Offset, Notes: notes, Chords: chords,
 		})
 	}
 	return sequences

@@ -127,3 +127,17 @@ func TestScoreSequences_RegionChordsStayOnRegionStaff(t *testing.T) {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
 }
+
+func TestScoreSequences_RegionChordsPreserveRecordedNotes(t *testing.T) {
+	project := logicx.ProjectData{Sequences: []logicx.MIDISequence{{
+		Name:  "Guitar",
+		Notes: []logicx.MIDINote{{Position: logicBarOneTick, Pitch: 62, Duration: 960}},
+		Chords: []logicx.Chord{{
+			Position: logicBarOneTick, Duration: 960, Name: "Dm", Pitches: []uint8{62, 65, 69},
+		}},
+	}}}
+	sequences := scoreSequences(project)
+	if len(sequences) != 1 || len(sequences[0].Notes) != 1 || sequences[0].Notes[0].Pitch != 62 {
+		t.Fatalf("score sequences = %+v", sequences)
+	}
+}
