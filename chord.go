@@ -75,8 +75,8 @@ func findProjectChords(chunks []Chunk) []Chord {
 			if len(decoded) == 0 || link.position > math.MaxUint32-projectChordPositionBias {
 				continue
 			}
-			// TODO(logicx): When edited sequences contain differing duplicate
-			// events, which record identifies the active revision?
+			// The link identifies the active child; delete/recreate leaves the
+			// previous child sequence orphaned in ProjectData.
 			chord := decoded[0]
 			chord.Position = link.position + projectChordPositionBias
 			chord.PositionFraction = link.positionFraction

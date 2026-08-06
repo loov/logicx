@@ -235,6 +235,22 @@ func TestParseProjectData_ProjectChordDurationComesFromChildSequence(t *testing.
 	}
 }
 
+func TestParseProjectData_ProjectChordLinkSelectsRecreatedChord(t *testing.T) {
+	clean := parseFixtureProject(t, "chord-revisions-clean.logicx")
+	revised := parseFixtureProject(t, "chord-revisions.logicx")
+	if len(clean.ProjectChords) != 4 || len(revised.ProjectChords) != 4 {
+		t.Fatalf("clean chords = %d, revised chords = %d", len(clean.ProjectChords), len(revised.ProjectChords))
+	}
+	want := []string{"C", "D", "E", "F"}
+	got := make([]string, len(revised.ProjectChords))
+	for i, chord := range revised.ProjectChords {
+		got[i] = chord.Name
+	}
+	if !slices.Equal(got, want) || clean.ProjectChords[3].SequenceID != 40 || revised.ProjectChords[3].SequenceID != 44 {
+		t.Fatalf("revised chords = %+v", revised.ProjectChords)
+	}
+}
+
 func TestParseProjectData_RegionChordsStayWithMIDISequence(t *testing.T) {
 	project := parseFixtureProject(t, "chord-regions.logicx")
 	if len(project.Sequences) != 2 {
