@@ -41,41 +41,37 @@ type KeySignatureChange struct {
 	Raw              [32]byte
 }
 
-// findTimeSignatureChanges collects the meter map, sorted by position. Beat
-// grouping lives in a separate record 40 bytes after the meter record, so this
-// scans by hand rather than through record.Scan.
+// findTimeSignatureChanges collects the meter map, sorted by position. A meter
+// record carries a beat grouping only when it is long enough to hold one.
 func findTimeSignatureChanges(chunks []Chunk) []TimeSignatureChange {
 	var changes []TimeSignatureChange
-	for _, chunk := range chunks {
-		if chunk.Type != "EvSq" {
-			continue
+	sequenceEvents(chunks, func(_ Chunk, event Event) {
+		if event.Type != eventTimeSignature {
+			return
 		}
-		for offset := 0; offset+32 <= len(chunk.Data); offset += 16 {
-			change, ok := decodeTimeSignatureChange(chunk.Data[offset : offset+32])
-			if !ok {
-				continue
-			}
-			if offset+64 <= len(chunk.Data) {
-				change.BeatGrouping, change.GroupingRaw = decodeBeatGrouping(chunk.Data[offset+40:offset+64], change.Numerator)
-				change.GroupingFlags = change.GroupingRaw[6]
-				change.PrintCompositeSignature = change.GroupingFlags&0x08 != 0
-			}
-			changes = append(changes, change)
+		change, ok := decodeTimeSignatureChange(event.Data)
+		if !ok {
+			return
 		}
-	}
+		if len(event.Data) >= 64 {
+			change.BeatGrouping, change.GroupingRaw = decodeBeatGrouping(event.Data[40:64], change.Numerator)
+			change.GroupingFlags = change.GroupingRaw[6]
+			change.PrintCompositeSignature = change.GroupingFlags&0x08 != 0
+		}
+		changes = append(changes, change)
+	})
 	slices.SortFunc(changes, func(a, b TimeSignatureChange) int {
 		return cmp.Or(cmp.Compare(a.Position, b.Position), cmp.Compare(a.PositionFraction, b.PositionFraction))
 	})
 	return changes
 }
 
-// decodeTimeSignatureChange decodes a meter record from a 32-byte window. The
-// denominator is stored as a power of two.
+// decodeTimeSignatureChange decodes a meter record. The denominator is stored
+// as a power of two.
 //
-// A meter event is a 16-byte header followed by a trailer that repeats the
-// event type, and both are required. Without the trailer, the middle of a
-// marker record decodes as a 1/1 meter at tick 2281701376, which stretches any
-// bar grid built from the result to hundreds of thousands of bars.
+// The second atom repeating the event type is checked as a consistency guard;
+// the record boundary is what keeps the middle of a marker record, which is
+// otherwise a plausible 1/1 meter, from decoding as one.
 func decodeTimeSignatureChange(data []byte) (TimeSignatureChange, bool) {
 	var change TimeSignatureChange
 	var denominatorPower uint8
@@ -140,18 +136,21 @@ func decodeBeatGrouping(data []byte, numerator uint8) ([]uint8, [24]byte) {
 // findKeySignatureChanges collects the key map, sorted by position.
 func findKeySignatureChanges(chunks []Chunk) []KeySignatureChange {
 	var changes []KeySignatureChange
-	for _, chunk := range chunks {
-		if chunk.Type == "EvSq" {
-			changes = append(changes, record.Scan(chunk.Data, 32, 16, decodeKeySignatureChange)...)
+	sequenceEvents(chunks, func(_ Chunk, event Event) {
+		if event.Type != eventKeySignature {
+			return
 		}
-	}
+		if change, ok := decodeKeySignatureChange(event.Data); ok {
+			changes = append(changes, change)
+		}
+	})
 	slices.SortFunc(changes, func(a, b KeySignatureChange) int {
 		return cmp.Or(cmp.Compare(a.Position, b.Position), cmp.Compare(a.PositionFraction, b.PositionFraction))
 	})
 	return changes
 }
 
-// decodeKeySignatureChange decodes a 32-byte key record. The low nibble of the
+// decodeKeySignatureChange decodes a key record. The low nibble of the
 // code counts fifths from Cb, and bit 0x10 marks a minor key.
 func decodeKeySignatureChange(data []byte) (KeySignatureChange, bool) {
 	var change KeySignatureChange

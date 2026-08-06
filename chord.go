@@ -60,13 +60,13 @@ type chordLink struct {
 // findProjectChords decodes the global chord track: every "Global Harmonies"
 // sequence links to child sequences that hold one chord event each.
 func findProjectChords(chunks []Chunk) []Chord {
-	events := make(map[chordSequenceID][]byte)
+	events := make(map[chordSequenceID][]Event)
 	durations := make(map[chordSequenceID]uint32)
 	for _, chunk := range chunks {
 		id := chunkSequenceID(chunk)
 		switch {
 		case chunk.Type == "EvSq":
-			events[id] = chunk.Data
+			events[id] = splitEvents(chunk.Data)
 		case chunk.Type == "MSeq" && sequenceName(chunk.Data) == "MIDI Region":
 			durations[id] = sequenceDuration(chunk.Data)
 		}
@@ -78,9 +78,8 @@ func findProjectChords(chunks []Chunk) []Chord {
 			continue
 		}
 		id := chunkSequenceID(chunk)
-		links := record.Scan(events[id], 80, 80, decodeChordLink)
-		for _, link := range links {
-			decoded := record.Scan(events[chordSequenceID{id.group, link.sequence}], 32, 16, decodeChordEvent)
+		for _, link := range decodeChordLinks(events[id]) {
+			decoded := decodeChordEvents(events[chordSequenceID{id.group, link.sequence}])
 			if len(decoded) == 0 || link.position > math.MaxUint32-projectChordPositionBias {
 				continue
 			}
@@ -112,6 +111,34 @@ func inferChordDurationsUntil(chords []Chord, end uint32) {
 	}
 }
 
+// decodeChordLinks decodes the locators of the global harmony track.
+func decodeChordLinks(events []Event) []chordLink {
+	var links []chordLink
+	for _, event := range events {
+		if event.Type != eventLink {
+			continue
+		}
+		if link, ok := decodeChordLink(event.Data); ok {
+			links = append(links, link)
+		}
+	}
+	return links
+}
+
+// decodeChordEvents decodes the chord and scale events of one sequence.
+func decodeChordEvents(events []Event) []Chord {
+	var chords []Chord
+	for _, event := range events {
+		if event.Type != eventScore {
+			continue
+		}
+		if chord, ok := decodeChordEvent(event.Data); ok {
+			chords = append(chords, chord)
+		}
+	}
+	return chords
+}
+
 // decodeChordLink decodes an 80-byte locator on the global harmony track.
 func decodeChordLink(data []byte) (chordLink, bool) {
 	var link chordLink
@@ -127,9 +154,9 @@ func decodeChordLink(data []byte) (chordLink, bool) {
 	return link, ok
 }
 
-// decodeChordEvent decodes a 32-byte chord or scale event. It reports false
-// for records whose fixed bytes or masks do not match, since the caller scans
-// unaligned data.
+// decodeChordEvent decodes a chord or scale event. Ornaments, arpeggios and
+// lyrics share this record type, so a mismatch here means the record is one of
+// those rather than that it is malformed.
 func decodeChordEvent(data []byte) (Chord, bool) {
 	var chord Chord
 	var rootSpelling, bassSpelling uint8

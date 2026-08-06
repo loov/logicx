@@ -228,8 +228,9 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		if !ok {
 			continue
 		}
-		notes := findMIDINotes(chunk.Data)
-		chords := record.Scan(chunk.Data, 32, 16, decodeChordEvent)
+		events := splitEvents(chunk.Data)
+		notes := findMIDINotes(events)
+		chords := decodeChordEvents(events)
 		if len(notes) == 0 && len(chords) == 0 {
 			continue
 		}
@@ -254,8 +255,7 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		if !ok || sequenceName(descriptor.Data) == "Global Harmonies" {
 			continue
 		}
-		links := record.Scan(event.Data, 80, 80, decodeRegionLink)
-		for _, link := range links {
+		for _, link := range decodeRegionLinks(splitEvents(event.Data)) {
 			s, ok := sources[chordSequenceID{group: id.group, sequence: link.sequence}]
 			if !ok {
 				continue
@@ -316,6 +316,20 @@ type regionLink struct {
 	position uint32
 	duration uint32
 	sequence uint32
+}
+
+// decodeRegionLinks decodes the arrangement locators of one sequence.
+func decodeRegionLinks(events []Event) []regionLink {
+	var links []regionLink
+	for _, event := range events {
+		if event.Type != eventLink {
+			continue
+		}
+		if link, ok := decodeRegionLink(event.Data); ok {
+			links = append(links, link)
+		}
+	}
+	return links
 }
 
 // decodeRegionLink decodes an 80-byte arrangement locator.
@@ -393,31 +407,30 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 }
 
 // findMIDINotes decodes the notes of an event sequence along with the score
-// symbols attached to them. Lyrics, ornaments and arpeggios precede the note
-// they belong to; articulations, fermatas and slur segments follow it.
-func findMIDINotes(data []byte) []MIDINote {
+// symbols attached to them. Lyrics, ornaments and arpeggios are separate
+// records preceding the note they belong to; articulations, fermatas and slur
+// segments are extra atoms of the note record itself.
+func findMIDINotes(events []Event) []MIDINote {
 	var notes []MIDINote
 	var lyrics []Lyric
 	var ornaments []ScoreOrnament
 	var arpeggios []ScoreArpeggio
 	var slurSegments []scoreSlurSegment
-	for offset := 0; offset+32 <= len(data); offset += 16 {
-		if lyric, size, ok := decodeLyric(data[offset:]); ok {
-			lyrics = append(lyrics, lyric)
-			offset += size - 16
+	for _, event := range events {
+		if event.Type == eventScore {
+			if lyric, ok := decodeLyric(event.Data); ok {
+				lyrics = append(lyrics, lyric)
+			} else if ornament, ok := decodeScoreOrnament(event.Data); ok {
+				ornaments = append(ornaments, ornament)
+			} else if arpeggio, ok := decodeScoreArpeggio(event.Data); ok {
+				arpeggios = append(arpeggios, arpeggio)
+			}
 			continue
 		}
-		if ornament, ok := decodeScoreOrnament(data[offset : offset+32]); ok {
-			ornaments = append(ornaments, ornament)
-			offset += 16
+		if event.Type != eventNote {
 			continue
 		}
-		if arpeggio, ok := decodeScoreArpeggio(data[offset : offset+32]); ok {
-			arpeggios = append(arpeggios, arpeggio)
-			offset += 16
-			continue
-		}
-		note, ok := decodeMIDINote(data[offset : offset+32])
+		note, ok := decodeMIDINote(event.Data)
 		if !ok {
 			continue
 		}
@@ -441,20 +454,17 @@ func findMIDINotes(data []byte) []MIDINote {
 			arpeggios = arpeggios[1:]
 		}
 		var slurSegment scoreSlurSegment
-		for articulationOffset := offset + 32; articulationOffset+16 <= len(data); articulationOffset += 16 {
-			if isScoreEventStart(data[articulationOffset:]) {
-				break
-			}
-			if slur, ok := decodeScoreSlurSegment(data[articulationOffset : articulationOffset+16]); ok {
+		for offset := 32; offset+16 <= len(event.Data); offset += 16 {
+			atom := event.Data[offset : offset+16]
+			if slur, ok := decodeScoreSlurSegment(atom); ok {
 				slurSegment = slur
 				continue
 			}
-			if fermata, ok := decodeScoreFermata(data[articulationOffset : articulationOffset+16]); ok {
+			if fermata, ok := decodeScoreFermata(atom); ok {
 				note.ScoreFermatas = append(note.ScoreFermatas, fermata)
 				continue
 			}
-			articulation, ok := decodeScoreArticulation(data[articulationOffset : articulationOffset+16])
-			if ok {
+			if articulation, ok := decodeScoreArticulation(atom); ok {
 				note.ScoreArticulations = append(note.ScoreArticulations, articulation)
 			}
 		}
@@ -679,9 +689,9 @@ func decodePositionedScoreSymbol(data []byte, symbol uint8, position *uint32, fr
 	)
 }
 
-// decodeLyric decodes a variable-length lyric record and returns its size in
-// bytes, so the caller can skip past it.
-func decodeLyric(data []byte) (Lyric, int, bool) {
+// decodeLyric decodes a lyric record. The text occupies every atom after the
+// third, so a record too short to hold one is not a lyric.
+func decodeLyric(data []byte) (Lyric, bool) {
 	var lyric Lyric
 	if !record.Decode(data,
 		record.Equal(0, 0x70, 0),
@@ -691,11 +701,11 @@ func decodeLyric(data []byte) (Lyric, int, bool) {
 		record.Uint8(11, &lyric.Verse),
 		record.Equal(12, 0x3d, 0, 0, 1),
 	) {
-		return Lyric{}, 0, false
+		return Lyric{}, false
 	}
-	size := nextScoreEvent(data)
+	size := len(data)
 	if size < 64 {
-		return Lyric{}, 0, false
+		return Lyric{}, false
 	}
 	// ponytail: Logic's fixture-proven ASCII cells are decoded here; Raw
 	// remains available if non-ASCII lyrics prove a different encoding.
@@ -710,26 +720,7 @@ func decodeLyric(data []byte) (Lyric, int, bool) {
 	}
 	lyric.Text = strings.TrimSpace(string(text))
 	lyric.Raw = bytes.Clone(data[:size])
-	return lyric, size, lyric.Text != ""
-}
-
-// nextScoreEvent returns the offset of the next event record after the one at
-// the start of data. A record that is the last one in its sequence runs to the
-// end of the data.
-func nextScoreEvent(data []byte) int {
-	for offset := 16; offset+16 <= len(data); offset += 16 {
-		if isScoreEventStart(data[offset:]) {
-			return offset
-		}
-	}
-	return len(data) / 16 * 16
-}
-
-// isScoreEventStart reports whether data starts a note or positioned score
-// event, which bounds the trailing records that belong to the previous note.
-func isScoreEventStart(data []byte) bool {
-	return len(data) >= 16 && (data[0] == 0x90 || data[0] == 0xb0 ||
-		data[0] == 0x70 && data[1] == 0 && data[12] >= 0x3c)
+	return lyric, lyric.Text != ""
 }
 
 // sequenceName returns the region name stored at the end of an MSeq payload.
@@ -753,18 +744,21 @@ func findMarkers(chunks []Chunk) []Marker {
 	}
 
 	var markers []Marker
-	for _, chunk := range chunks {
-		if chunk.Type != "EvSq" {
-			continue
+	decode := markerDecoder(texts)
+	sequenceEvents(chunks, func(_ Chunk, event Event) {
+		if event.Type != eventMarker {
+			return
 		}
-		markers = append(markers, record.Scan(chunk.Data, 48, 16, markerDecoder(texts))...)
-	}
+		if marker, ok := decode(event.Data); ok {
+			markers = append(markers, marker)
+		}
+	})
 	slices.SortFunc(markers, func(a, b Marker) int { return cmp.Compare(a.Position, b.Position) })
 	return markers
 }
 
-// markerDecoder returns a decoder for 48-byte marker records that resolves
-// each marker's text through texts, rejecting markers whose text is missing.
+// markerDecoder returns a decoder for marker records that resolves each
+// marker's text through texts, rejecting markers whose text is missing.
 func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
 	return func(data []byte) (Marker, bool) {
 		var marker Marker

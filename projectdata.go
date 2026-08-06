@@ -24,6 +24,9 @@ type ProjectData struct {
 	ProjectChords  []Chord
 }
 
+// chunkHeaderSize is the size of the header preceding every chunk's payload.
+const chunkHeaderSize = 36
+
 // Chunk is one lossless ProjectData record. Its semantics are undocumented;
 // Header and Data preserve fields not decoded by this package.
 type Chunk struct {
@@ -43,7 +46,7 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	copy(header[:], data[:24])
 	p := ProjectData{
 		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(data),
-		Tracks: findTracks(data), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
+		Tracks: findTracks(chunks), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
 		TempoChanges:   findTempoChanges(chunks),
 		TimeSignatures: findTimeSignatureChanges(chunks), KeySignatures: findKeySignatureChanges(chunks),
 		ProjectChords: findProjectChords(chunks),
@@ -63,17 +66,17 @@ func parseChunks(data []byte) ([]Chunk, error) {
 		if len(data)-offset < 36 {
 			return nil, fmt.Errorf("logicx: truncated chunk header at offset %d", offset)
 		}
-		header := data[offset : offset+36]
+		header := data[offset : offset+chunkHeaderSize]
 		size := binary.LittleEndian.Uint64(header[28:36])
-		if size > uint64(len(data)-offset-36) {
+		if size > uint64(len(data)-offset-chunkHeaderSize) {
 			return nil, fmt.Errorf("logicx: truncated chunk at offset %d", offset)
 		}
-		var rawHeader [36]byte
+		var rawHeader [chunkHeaderSize]byte
 		copy(rawHeader[:], header)
-		end := offset + 36 + int(size)
+		end := offset + chunkHeaderSize + int(size)
 		chunks = append(chunks, Chunk{
 			Type: reverse4(header[:4]), Offset: offset, Header: rawHeader,
-			Data: bytes.Clone(data[offset+36 : end]),
+			Data: bytes.Clone(data[offset+chunkHeaderSize : end]),
 		})
 		offset = end
 	}

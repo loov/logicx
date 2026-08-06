@@ -19,7 +19,8 @@ func TestOpenBundle_ParsesBinaryMetadataAndInstrument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload := make([]byte, 8)
+	// A channel strip is one AuCO chunk with its record at a fixed offset.
+	payload := make([]byte, channelStripRecord)
 	track := append([]byte{0x20}, []byte("Inst 1")...)
 	track = append(track, make([]byte, 16-len(track))...)
 	track = append(track, []byte{0x29, 0, 0xf7, 0xc5, 1, 0, 0, 0}...)
@@ -27,8 +28,9 @@ func TestOpenBundle_ParsesBinaryMetadataAndInstrument(t *testing.T) {
 	payload = append(payload, []byte("Pigments\x00utrAumua1taK")...)
 	data := make([]byte, 24)
 	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})
-	chunkHeader := make([]byte, 36)
-	copy(chunkHeader, "tseT")
+	chunkHeader := make([]byte, chunkHeaderSize)
+	copy(chunkHeader, "OCuA")
+	copy(chunkHeader[channelStripHeaderStart:], channelStripVariant)
 	binary.LittleEndian.PutUint64(chunkHeader[28:], uint64(len(payload)))
 	data = append(data, chunkHeader...)
 	data = append(data, payload...)
@@ -220,6 +222,8 @@ func TestParseProjectData_ParsesMarkers(t *testing.T) {
 	binary.LittleEndian.PutUint32(events[16:20], 4)
 	binary.LittleEndian.PutUint32(events[20:24], 0x88000000)
 	binary.LittleEndian.PutUint32(events[28:32], 7_680)
+	// A marker is three atoms; both trailing atoms set the continuation bit.
+	events[39] = 0x88
 	data = appendChunk(data, "qSvE", events)
 	data = appendChunkID(data, "qSxT", 4, []byte("prefix{\\rtf1\\ansi \\f0\\fs24 Chorus}"))
 
@@ -457,6 +461,48 @@ func TestParseProjectData_MarkersDoNotDecodeAsTimeSignatures(t *testing.T) {
 	times := parseFixtureProject(t, "chords.logicx").TimeSignatures
 	if len(times) != 1 || times[0].Position != 38_400 || times[0].Numerator != 4 || times[0].Denominator != 4 {
 		t.Fatalf("time signatures = %+v", times)
+	}
+}
+
+func TestSplitEvents_UsesTheContinuationBit(t *testing.T) {
+	atom := func(tag, continuation byte) []byte {
+		a := make([]byte, 16)
+		a[0], a[7] = tag, continuation
+		return a
+	}
+	var data []byte
+	data = append(data, atom(0x12, 0)...)    // marker, three atoms
+	data = append(data, atom(0x30, 0x88)...) // looks like a meter, but continues the marker
+	data = append(data, atom(0x00, 0x88)...)
+	data = append(data, atom(0x60, 0)...) // tempo, two atoms
+	data = append(data, atom(0x00, 0x89)...)
+	data = append(data, atom(0xf1, 0x3f)...) // sentinel
+
+	events := splitEvents(data)
+	if len(events) != 3 {
+		t.Fatalf("events = %+v", events)
+	}
+	want := []struct {
+		typ    byte
+		offset int
+		size   int
+	}{{0x12, 0, 48}, {0x60, 48, 32}, {0xf1, 80, 16}}
+	for i, w := range want {
+		if events[i].Type != w.typ || events[i].Offset != w.offset || len(events[i].Data) != w.size {
+			t.Errorf("event[%d] = type %#x offset %d size %d, want %#x %d %d",
+				i, events[i].Type, events[i].Offset, len(events[i].Data), w.typ, w.offset, w.size)
+		}
+	}
+}
+
+func TestFindTracks_IncludesOutputChannelStrips(t *testing.T) {
+	tracks := parseFixtureProject(t, "chords.logicx").Tracks
+	kinds := map[TrackKind]int{}
+	for _, track := range tracks {
+		kinds[track.Kind]++
+	}
+	if kinds[TrackKindOutput] != 3 || kinds[TrackKindMaster] != 1 || kinds[TrackKindInstrument] == 0 {
+		t.Fatalf("track kinds = %v", kinds)
 	}
 }
 

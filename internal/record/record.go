@@ -21,21 +21,6 @@ func Decode(data []byte, fields ...Field) bool {
 	return true
 }
 
-// Scan decodes fixed-size records at stride-byte offsets.
-func Scan[T any](data []byte, size, stride int, decode func([]byte) (T, bool)) []T {
-	if size <= 0 || stride <= 0 || size > len(data) {
-		return nil
-	}
-	var found []T
-	for offset := 0; offset <= len(data)-size; offset += stride {
-		value, ok := decode(data[offset : offset+size])
-		if ok {
-			found = append(found, value)
-		}
-	}
-	return found
-}
-
 // Equal matches bytes at offset.
 func Equal(offset int, want ...byte) Field {
 	return func(data []byte) bool {

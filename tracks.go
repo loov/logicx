@@ -81,16 +81,34 @@ func findAudioUnits(data []byte) []AudioUnit {
 	return found
 }
 
-// findTracks scans for channel-strip records: a length-prefixed printable name
-// padded to 16 bytes, followed by an 8-byte descriptor. Results are ordered by
-// offset, which assignAudioUnits relies on.
-func findTracks(data []byte) []Track {
+// Channel strips are stored one per chunk. The chunk type is shared with other
+// audio configuration data, so the header variant selects strips, and the
+// record then sits at a fixed offset rather than needing to be searched for.
+const (
+	channelStripChunk       = "AuCO"
+	channelStripRecord      = 60
+	channelStripRecordSize  = 24
+	channelStripHeaderStart = 4
+)
+
+// channelStripVariant is the header field that marks an AuCO chunk as a
+// channel strip rather than another kind of audio configuration.
+var channelStripVariant = []byte{0x07, 0x00, 0x0e, 0x00}
+
+// findTracks decodes one channel strip per chunk. The record is a leading
+// byte, a name padded to 16 bytes, and an 8-byte descriptor. Chunks are in
+// file order, so the result is ordered by offset, which assignAudioUnits
+// relies on.
+func findTracks(chunks []Chunk) []Track {
 	var tracks []Track
-	for off := 1; off+24 <= len(data); off++ {
-		if data[off] != 0x20 || data[off-1] != 0 || data[off+19]&0xc0 != 0xc0 {
+	for _, chunk := range chunks {
+		if chunk.Type != channelStripChunk ||
+			!bytes.Equal(chunk.Header[channelStripHeaderStart:channelStripHeaderStart+4], channelStripVariant) ||
+			len(chunk.Data) < channelStripRecord+channelStripRecordSize {
 			continue
 		}
-		field := data[off : off+16]
+		record := chunk.Data[channelStripRecord : channelStripRecord+channelStripRecordSize]
+		field := record[:16]
 		nameEnd := 16
 		if zero := bytes.IndexByte(field[1:], 0); zero >= 0 {
 			nameEnd = zero + 1
@@ -102,12 +120,12 @@ func findTracks(data []byte) []Track {
 		if name == "" {
 			continue
 		}
-		descriptor := data[off+16 : off+24]
+		descriptor := record[16:24]
 		tracks = append(tracks, Track{
-			Name: name, Kind: trackKind(descriptor), Offset: off,
+			Name: name, Kind: trackKind(descriptor),
+			Offset: chunk.Offset + chunkHeaderSize + channelStripRecord,
 			Active: descriptor[2]&0x04 != 0 || descriptor[4] != 0,
 		})
-		off += 15
 	}
 	return tracks
 }

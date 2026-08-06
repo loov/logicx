@@ -22,22 +22,25 @@ type TempoChange struct {
 }
 
 // findTempoChanges collects the tempo map from every event sequence, sorted by
-// position. Logic keeps the map in a global sequence, so scanning all of them
+// position. Logic keeps the map in a global sequence, so reading all of them
 // costs little and survives layout changes.
 func findTempoChanges(chunks []Chunk) []TempoChange {
 	var changes []TempoChange
-	for _, chunk := range chunks {
-		if chunk.Type == "EvSq" {
-			changes = append(changes, record.Scan(chunk.Data, 32, 16, decodeTempoChange)...)
+	sequenceEvents(chunks, func(_ Chunk, event Event) {
+		if event.Type != eventTempo {
+			return
 		}
-	}
+		if change, ok := decodeTempoChange(event.Data); ok {
+			changes = append(changes, change)
+		}
+	})
 	slices.SortFunc(changes, func(a, b TempoChange) int {
 		return cmp.Or(cmp.Compare(a.Position, b.Position), cmp.Compare(a.PositionFraction, b.PositionFraction))
 	})
 	return changes
 }
 
-// decodeTempoChange decodes a 32-byte tempo record. The BPM field is stored as
+// decodeTempoChange decodes a tempo record. The BPM field is stored as
 // beats per minute scaled by 10000; implausible values reject the record,
 // because the caller scans unaligned data.
 func decodeTempoChange(data []byte) (TempoChange, bool) {
