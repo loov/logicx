@@ -180,6 +180,37 @@ func TestParseProjectData_NativeScoreFixturePreservesNotation(t *testing.T) {
 	}
 }
 
+func TestParseProjectData_SlurSegmentsBecomeSemanticEndpoints(t *testing.T) {
+	sequences := parseFixtureProject(t, "score-slurs.logicx").Sequences
+	if len(sequences) != 1 || len(sequences[0].Notes) != 32 {
+		t.Fatalf("sequences = %+v", sequences)
+	}
+	notes := sequences[0].Notes
+	check := func(note int, slurType ScoreSlurType, number uint8, placement ScoreSlurPlacement, rawCount int) {
+		t.Helper()
+		if len(notes[note].ScoreSlurs) != 1 {
+			t.Errorf("note %d slurs = %+v", note, notes[note].ScoreSlurs)
+			return
+		}
+		slur := notes[note].ScoreSlurs[0]
+		if slur.Type != slurType || slur.Number != number || slur.Placement != placement || len(slur.Raw) != rawCount {
+			t.Errorf("note %d slur = %+v", note, slur)
+		}
+	}
+	check(0, ScoreSlurTypeStart, 1, ScoreSlurPlacementAutomatic, 1)
+	check(4, ScoreSlurTypeStart, 1, ScoreSlurPlacementAutomatic, 2)
+	check(8, ScoreSlurTypeStart, 1, ScoreSlurPlacementAutomatic, 3)
+	check(14, ScoreSlurTypeStart, 1, ScoreSlurPlacementAutomatic, 3)
+	for i := range 3 {
+		check(20+i, ScoreSlurTypeStart, uint8(i+1), ScoreSlurPlacementAutomatic, 1)
+		check(23+i, ScoreSlurTypeStop, uint8(i+1), ScoreSlurPlacementAutomatic, 1)
+	}
+	check(28, ScoreSlurTypeStart, 1, ScoreSlurPlacementAbove, 1)
+	check(29, ScoreSlurTypeStop, 1, ScoreSlurPlacementAutomatic, 1)
+	check(30, ScoreSlurTypeStart, 1, ScoreSlurPlacementBelow, 2)
+	check(31, ScoreSlurTypeStop, 1, ScoreSlurPlacementAutomatic, 2)
+}
+
 func TestParseProjectData_ParsesMarkers(t *testing.T) {
 	data := make([]byte, 24)
 	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})

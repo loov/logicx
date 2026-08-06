@@ -181,6 +181,7 @@ type noteSegment struct {
 	ScoreFermatas      []logicx.ScoreFermata
 	ScoreOrnaments     []logicx.ScoreOrnament
 	ScoreArpeggios     []logicx.ScoreArpeggio
+	ScoreSlurs         []logicx.ScoreSlur
 	TieStart, TieEnd   bool
 }
 
@@ -281,12 +282,14 @@ func makePart(
 				ScoreFermatas:      note.ScoreFermatas,
 				ScoreOrnaments:     note.ScoreOrnaments,
 				ScoreArpeggios:     note.ScoreArpeggios,
+				ScoreSlurs:         note.ScoreSlurs,
 				TieStart:           !first, TieEnd: remaining > duration,
 			})
 			note.ScoreArticulations = nil
 			note.ScoreFermatas = nil
 			note.ScoreOrnaments = nil
 			note.ScoreArpeggios = nil
+			note.ScoreSlurs = nil
 			note.Lyrics = nil
 			position += duration
 			remaining -= duration
@@ -565,6 +568,11 @@ func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 		note.Ties = append(note.Ties, xmlTie{Type: "start"})
 		note.Notations.Tied = append(note.Notations.Tied, xmlTie{Type: "start"})
 	}
+	for _, slur := range segment.ScoreSlurs {
+		note.Notations.Slurs = append(note.Notations.Slurs, xmlSlur{
+			Type: string(slur.Type), Number: slur.Number, Placement: string(slur.Placement),
+		})
+	}
 	note.Notations.Articulations = makeXMLArticulations(segment.ScoreArticulations)
 	for _, fermata := range segment.ScoreFermatas {
 		typeName := "upright"
@@ -789,10 +797,17 @@ type xmlTie struct {
 
 type xmlNotations struct {
 	Tied          []xmlTie          `xml:"tied,omitempty"`
+	Slurs         []xmlSlur         `xml:"slur,omitempty"`
 	Fermatas      []xmlFermata      `xml:"fermata,omitempty"`
 	Arpeggiates   []xmlArpeggiate   `xml:"arpeggiate,omitempty"`
 	Articulations *xmlArticulations `xml:"articulations,omitempty"`
 	Ornaments     *xmlOrnaments     `xml:"ornaments,omitempty"`
+}
+
+type xmlSlur struct {
+	Type      string `xml:"type,attr"`
+	Number    uint8  `xml:"number,attr,omitempty"`
+	Placement string `xml:"placement,attr,omitempty"`
 }
 
 type xmlFermata struct {

@@ -28,9 +28,10 @@ func TestWriteMusicXML(t *testing.T) {
 						{Kind: logicx.ScoreOrnamentInvertedTurn}, {Kind: logicx.ScoreOrnamentInvertedTurnWithLine},
 						{Kind: logicx.ScoreOrnamentMordent}, {Kind: logicx.ScoreOrnamentInvertedMordent},
 						{Kind: logicx.ScoreOrnamentTremolo},
-					}, ScoreArpeggios: []logicx.ScoreArpeggio{{}, {Direction: logicx.ScoreArpeggioDirectionUp}, {Direction: logicx.ScoreArpeggioDirectionDown}}},
+					}, ScoreArpeggios: []logicx.ScoreArpeggio{{}, {Direction: logicx.ScoreArpeggioDirectionUp}, {Direction: logicx.ScoreArpeggioDirectionDown}},
+						ScoreSlurs: []logicx.ScoreSlur{{Type: logicx.ScoreSlurTypeStart, Number: 1, Placement: logicx.ScoreSlurPlacementAbove}}},
 					{Position: logicBarOneTick, Pitch: 71, Duration: 720},
-					{Position: logicBarOneTick + 3_600, Pitch: 74, Duration: 480},
+					{Position: logicBarOneTick + 3_600, Pitch: 74, Duration: 480, ScoreSlurs: []logicx.ScoreSlur{{Type: logicx.ScoreSlurTypeStop, Number: 1}}},
 				},
 			}},
 			Markers: []logicx.Marker{{Position: logicBarOneTick, Name: "Chorus"}},
@@ -66,6 +67,7 @@ func TestWriteMusicXML(t *testing.T) {
 		`<trill-mark></trill-mark>`, `<turn></turn>`, `<inverted-turn></inverted-turn>`,
 		`<inverted-vertical-turn></inverted-vertical-turn>`, `<mordent></mordent>`,
 		`<inverted-mordent></inverted-mordent>`, `<tremolo>3</tremolo>`,
+		`<slur type="start" number="1" placement="above"></slur>`, `<slur type="stop" number="1"></slur>`,
 		`<lyric number="1">`, `<text>hello</text>`,
 	} {
 		if !strings.Contains(xml, want) {

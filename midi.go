@@ -40,6 +40,7 @@ type MIDINote struct {
 	ScoreFermatas      []ScoreFermata
 	ScoreOrnaments     []ScoreOrnament
 	ScoreArpeggios     []ScoreArpeggio
+	ScoreSlurs         []ScoreSlur
 	Raw                [32]byte
 }
 
@@ -80,6 +81,35 @@ type ScoreFermata struct {
 	Inverted bool
 	Code     uint8
 	Raw      [16]byte
+}
+
+// ScoreSlurType identifies one endpoint of a reconstructed slur.
+type ScoreSlurType string
+
+const (
+	ScoreSlurTypeUnknown ScoreSlurType = ""
+	ScoreSlurTypeStart   ScoreSlurType = "start"
+	ScoreSlurTypeStop    ScoreSlurType = "stop"
+)
+
+// ScoreSlurPlacement identifies an explicit slur placement. An empty value
+// lets the notation program choose automatically.
+type ScoreSlurPlacement string
+
+const (
+	ScoreSlurPlacementAutomatic ScoreSlurPlacement = ""
+	ScoreSlurPlacementAbove     ScoreSlurPlacement = "above"
+	ScoreSlurPlacementBelow     ScoreSlurPlacement = "below"
+)
+
+// ScoreSlur is one endpoint of a Logic Score Editor slur. Number pairs chord
+// tones; Raw preserves every 16-byte segment record in the slur.
+type ScoreSlur struct {
+	Type      ScoreSlurType
+	Placement ScoreSlurPlacement
+	Number    uint8
+	Code      uint8
+	Raw       [][16]byte
 }
 
 // ScoreOrnamentKind identifies an ornament attached to a note.
@@ -326,6 +356,7 @@ func findMIDINotes(data []byte) []MIDINote {
 	var lyrics []Lyric
 	var ornaments []ScoreOrnament
 	var arpeggios []ScoreArpeggio
+	var slurSegments []scoreSlurSegment
 	for offset := 0; offset+32 <= len(data); offset += 16 {
 		if lyric, size, ok := decodeLyric(data[offset:]); ok {
 			lyrics = append(lyrics, lyric)
@@ -365,9 +396,14 @@ func findMIDINotes(data []byte) []MIDINote {
 			}
 			arpeggios = arpeggios[1:]
 		}
+		var slurSegment scoreSlurSegment
 		for articulationOffset := offset + 32; articulationOffset+16 <= len(data); articulationOffset += 16 {
 			if isScoreEventStart(data[articulationOffset:]) {
 				break
+			}
+			if slur, ok := decodeScoreSlurSegment(data[articulationOffset : articulationOffset+16]); ok {
+				slurSegment = slur
+				continue
 			}
 			if fermata, ok := decodeScoreFermata(data[articulationOffset : articulationOffset+16]); ok {
 				note.ScoreFermatas = append(note.ScoreFermatas, fermata)
@@ -379,7 +415,9 @@ func findMIDINotes(data []byte) []MIDINote {
 			}
 		}
 		notes = append(notes, note)
+		slurSegments = append(slurSegments, slurSegment)
 	}
+	attachScoreSlurs(notes, slurSegments)
 	return notes
 }
 
@@ -446,6 +484,87 @@ func decodeScoreFermata(data []byte) (ScoreFermata, bool) {
 	}
 	fermata.Inverted = fermata.Code == 19
 	return fermata, true
+}
+
+type scoreSlurSegment struct {
+	code uint8
+	raw  [16]byte
+}
+
+func decodeScoreSlurSegment(data []byte) (scoreSlurSegment, bool) {
+	var segment scoreSlurSegment
+	if !record.Decode(data,
+		record.Equal(0, 0, 0, 0, 0, 0, 0, 0, 0x8c, 0, 0, 0, 0, 0, 0, 0),
+		record.Uint8(15, &segment.code),
+		record.Copy(0, segment.raw[:]),
+	) || segment.code < 1 || segment.code > 3 {
+		return scoreSlurSegment{}, false
+	}
+	return segment, true
+}
+
+func attachScoreSlurs(notes []MIDINote, segments []scoreSlurSegment) {
+	consumed := make([]bool, len(notes))
+	for start := 0; start < len(notes); start = nextNotePosition(notes, start) {
+		segment := segments[start]
+		if segment.code == 0 || consumed[start] {
+			continue
+		}
+		end := nextNotePosition(notes, start)
+		if end == len(notes) {
+			continue
+		}
+		raw := [][16]byte{segment.raw}
+		placement := ScoreSlurPlacementAutomatic
+		switch segment.code {
+		case 1:
+			for end < len(notes) {
+				continuation := segments[end]
+				if continuation.code != 1 || consumed[end] {
+					break
+				}
+				consumed[end] = true
+				raw = append(raw, continuation.raw)
+				end = nextNotePosition(notes, end)
+			}
+		case 2:
+			placement = ScoreSlurPlacementAbove
+		case 3:
+			placement = ScoreSlurPlacementBelow
+			if marker := segments[end]; marker.code == 1 {
+				consumed[end] = true
+				raw = append(raw, marker.raw)
+			}
+		}
+		if end == len(notes) {
+			continue
+		}
+		startEnd := nextNotePosition(notes, start)
+		stopEnd := nextNotePosition(notes, end)
+		count := min(startEnd-start, stopEnd-end)
+		if count > 255 {
+			count = 255
+		}
+		for i := range count {
+			number := uint8(i + 1)
+			notes[start+i].ScoreSlurs = append(notes[start+i].ScoreSlurs, ScoreSlur{
+				Type: ScoreSlurTypeStart, Placement: placement, Number: number,
+				Code: segment.code, Raw: slices.Clone(raw),
+			})
+			notes[end+i].ScoreSlurs = append(notes[end+i].ScoreSlurs, ScoreSlur{
+				Type: ScoreSlurTypeStop, Number: number, Code: segment.code, Raw: slices.Clone(raw),
+			})
+		}
+	}
+}
+
+func nextNotePosition(notes []MIDINote, start int) int {
+	end := start + 1
+	for end < len(notes) && notes[end].Position == notes[start].Position &&
+		notes[end].PositionFraction == notes[start].PositionFraction {
+		end++
+	}
+	return end
 }
 
 func decodeScoreOrnament(data []byte) (ScoreOrnament, bool) {
