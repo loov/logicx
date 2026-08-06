@@ -317,6 +317,34 @@ func TestParseProjectData_TempoMapPreservesStepsAndCurves(t *testing.T) {
 	}
 }
 
+func TestParseProjectData_SignatureMapsPreserveKeysMetersAndGrouping(t *testing.T) {
+	times := parseFixtureProject(t, "signature-map-time.logicx").TimeSignatures
+	if len(times) != 3 || times[0].Position != 38_400 || times[0].Numerator != 4 || times[0].Denominator != 4 || times[1].Position != 46_080 || times[1].Numerator != 3 || times[1].Denominator != 4 || times[2].Position != 51_840 || times[2].Numerator != 5 || times[2].Denominator != 8 {
+		t.Fatalf("time signatures = %+v", times)
+	}
+	keys := parseFixtureProject(t, "signature-map-key.logicx").KeySignatures
+	if len(keys) != 3 || keys[0].Position != 38_400 || keys[0].Fifths != 0 || keys[0].Minor || keys[1].Position != 46_080 || keys[1].Fifths != 1 || keys[1].Minor || keys[2].Position != 53_760 || keys[2].Fifths != -6 || !keys[2].Minor {
+		t.Fatalf("key signatures = %+v", keys)
+	}
+	five := parseFixtureProject(t, "signature-grouping-5-8.logicx").TimeSignatures
+	seven := parseFixtureProject(t, "signature-grouping-7-8.logicx").TimeSignatures
+	if len(five) != 2 || !slices.Equal(five[0].BeatGrouping, []uint8{2, 3}) || !slices.Equal(five[1].BeatGrouping, []uint8{3, 2}) {
+		t.Fatalf("5/8 signatures = %+v", five)
+	}
+	if !five[0].PrintCompositeSignature || !five[1].PrintCompositeSignature || five[0].GroupingFlags != 0x0c {
+		t.Fatalf("5/8 composite signature flags = %+v", five)
+	}
+	wantSeven := [][]uint8{{2, 2, 3}, {3, 2, 2}, {2, 3, 2}}
+	if len(seven) != len(wantSeven) {
+		t.Fatalf("7/8 signatures = %+v", seven)
+	}
+	for i := range seven {
+		if !slices.Equal(seven[i].BeatGrouping, wantSeven[i]) || seven[i].PrintCompositeSignature || seven[i].GroupingFlags != 0x04 {
+			t.Errorf("7/8 signature[%d] = %+v", i, seven[i])
+		}
+	}
+}
+
 func parseFixtureProject(t *testing.T, name string) ProjectData {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name, "Alternatives", "000", "ProjectData"))

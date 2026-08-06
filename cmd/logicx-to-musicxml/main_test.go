@@ -27,6 +27,14 @@ func TestWriteMusicXML(t *testing.T) {
 				{Position: logicBarOneTick, BPM: 120},
 				{Position: logicBarOneTick + 1_920, BPM: 90},
 			},
+			TimeSignatures: []logicx.TimeSignatureChange{
+				{Position: logicBarOneTick, Numerator: 4, Denominator: 4},
+				{Position: logicBarOneTick + 3_840, Numerator: 5, Denominator: 8, BeatGrouping: []uint8{2, 3}, PrintCompositeSignature: true},
+			},
+			KeySignatures: []logicx.KeySignatureChange{
+				{Position: logicBarOneTick, Fifths: 1},
+				{Position: logicBarOneTick + 3_840, Fifths: -6, Minor: true},
+			},
 		},
 	}
 	var output bytes.Buffer
@@ -38,7 +46,8 @@ func TestWriteMusicXML(t *testing.T) {
 		`<score-partwise version="4.0">`, `<part-name>Trumpet</part-name>`, `<fifths>1</fifths>`,
 		`<sound tempo="120"></sound>`, `<sound tempo="90"></sound>`, `<offset>1920</offset>`,
 		`<chord></chord>`, `<tie type="start"></tie>`, `<tie type="stop"></tie>`,
-		`<rehearsal>Chorus</rehearsal>`,
+		`<rehearsal>Chorus</rehearsal>`, `<beats>2+3</beats>`, `<beat-type>8</beat-type>`,
+		`<fifths>-6</fifths>`, `<mode>minor</mode>`,
 	} {
 		if !strings.Contains(xml, want) {
 			t.Errorf("output does not contain %q:\n%s", want, xml)

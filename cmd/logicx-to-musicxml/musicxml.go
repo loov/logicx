@@ -39,11 +39,12 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 	for _, tempo := range alternative.Project.TempoChanges {
 		origin = min(origin, tempo.Position)
 	}
-	numerator, denominator := alternative.Metadata.TimeSignature[0], alternative.Metadata.TimeSignature[1]
-	if numerator == 0 || denominator == 0 {
-		numerator, denominator = 4, 4
+	for _, signature := range alternative.Project.TimeSignatures {
+		origin = min(origin, signature.Position)
 	}
-	measureTicks := ticksPerQuarter * 4 * uint32(numerator) / uint32(denominator)
+	for _, signature := range alternative.Project.KeySignatures {
+		origin = min(origin, signature.Position)
+	}
 
 	score := xmlScore{Version: "4.0"}
 	for i, sequence := range sequences {
@@ -55,7 +56,10 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative) error {
 			markers = alternative.Project.Markers
 			tempos = alternative.Project.TempoChanges
 		}
-		score.Parts = append(score.Parts, makePart(id, sequence, markers, tempos, alternative.Metadata, origin, measureTicks))
+		score.Parts = append(score.Parts, makePart(
+			id, sequence, markers, tempos, alternative.Project.TimeSignatures,
+			alternative.Project.KeySignatures, alternative.Metadata, origin,
+		))
 	}
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
@@ -175,7 +179,80 @@ type noteSegment struct {
 	TieStart, TieEnd bool
 }
 
-func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, tempos []logicx.TempoChange, metadata logicx.Metadata, origin, measureTicks uint32) xmlPart {
+type measureMap struct {
+	numerator   uint64
+	denominator uint64
+	changes     []logicx.TimeSignatureChange
+	starts      []uint32
+	durations   []uint32
+}
+
+func newMeasureMap(origin uint32, metadata logicx.Metadata, changes []logicx.TimeSignatureChange) *measureMap {
+	changes = append([]logicx.TimeSignatureChange(nil), changes...)
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Position < changes[j].Position })
+	numerator, denominator := metadata.TimeSignature[0], metadata.TimeSignature[1]
+	if numerator == 0 || denominator == 0 {
+		numerator, denominator = 4, 4
+	}
+	for _, change := range changes {
+		if change.Position <= origin {
+			numerator, denominator = uint64(change.Numerator), uint64(change.Denominator)
+		}
+	}
+	m := &measureMap{
+		numerator: numerator, denominator: denominator,
+		changes: changes, starts: []uint32{origin},
+	}
+	m.durations = append(m.durations, meterTicks(numerator, denominator))
+	return m
+}
+
+func meterTicks(numerator, denominator uint64) uint32 {
+	if numerator == 0 || denominator == 0 {
+		return 4 * ticksPerQuarter
+	}
+	const quarterScale = uint64(ticksPerQuarter) * 4
+	if numerator > uint64(^uint32(0))/quarterScale {
+		return 4 * ticksPerQuarter
+	}
+	ticks := quarterScale * numerator / denominator
+	if ticks == 0 || ticks > uint64(^uint32(0)) {
+		return 4 * ticksPerQuarter
+	}
+	return uint32(ticks)
+}
+
+func (m *measureMap) locate(position uint32) (int, uint32) {
+	for uint64(position) >= uint64(m.starts[len(m.starts)-1])+uint64(m.durations[len(m.durations)-1]) {
+		start := m.starts[len(m.starts)-1] + m.durations[len(m.durations)-1]
+		numerator, denominator := m.numerator, m.denominator
+		for _, change := range m.changes {
+			if change.Position > start {
+				break
+			}
+			numerator, denominator = uint64(change.Numerator), uint64(change.Denominator)
+		}
+		m.starts = append(m.starts, start)
+		m.durations = append(m.durations, meterTicks(numerator, denominator))
+	}
+	measure := len(m.starts) - 1
+	for measure > 0 && position < m.starts[measure] {
+		measure--
+	}
+	return measure, position - m.starts[measure]
+}
+
+func makePart(
+	id string,
+	sequence logicx.MIDISequence,
+	markers []logicx.Marker,
+	tempos []logicx.TempoChange,
+	timeSignatures []logicx.TimeSignatureChange,
+	keySignatures []logicx.KeySignatureChange,
+	metadata logicx.Metadata,
+	origin uint32,
+) xmlPart {
+	measures := newMeasureMap(origin, metadata, timeSignatures)
 	var byMeasure [][]noteSegment
 	for _, note := range sequence.Notes {
 		if note.Duration == 0 {
@@ -183,45 +260,40 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 		}
 		// ponytail: MusicXML currently rounds sub-tick positions down; use a
 		// higher divisions value if real projects contain non-zero fractions.
-		start := note.Position - origin
+		position := note.Position
 		remaining := note.Duration
 		first := true
 		for remaining > 0 {
-			measure := int(start / measureTicks)
+			measure, within := measures.locate(position)
 			for len(byMeasure) <= measure {
 				byMeasure = append(byMeasure, nil)
 			}
-			within := start % measureTicks
-			duration := min(remaining, measureTicks-within)
+			duration := min(remaining, measures.durations[measure]-within)
 			byMeasure[measure] = append(byMeasure[measure], noteSegment{
 				Start: within, Duration: duration, Pitch: note.Pitch,
 				TieStart: !first, TieEnd: remaining > duration,
 			})
-			start += duration
+			position += duration
 			remaining -= duration
 			first = false
 		}
 	}
 	markerMeasures := make(map[int][]xmlDirection)
 	for _, marker := range markers {
-		position := marker.Position - origin
-		measure := int(position / measureTicks)
+		measure, offset := measures.locate(marker.Position)
 		for len(byMeasure) <= measure {
 			byMeasure = append(byMeasure, nil)
 		}
-		offset := position % measureTicks
 		markerMeasures[measure] = append(markerMeasures[measure], xmlDirection{
 			Placement: "above", Type: xmlDirectionType{Rehearsal: marker.Name}, Offset: &offset,
 		})
 	}
 	tempoMeasures := make(map[int][]xmlDirection)
 	for _, tempo := range tempos {
-		position := tempo.Position - origin
-		measure := int(position / measureTicks)
+		measure, offset := measures.locate(tempo.Position)
 		for len(byMeasure) <= measure {
 			byMeasure = append(byMeasure, nil)
 		}
-		offset := position % measureTicks
 		tempoMeasures[measure] = append(tempoMeasures[measure], xmlDirection{
 			Placement: "above", Offset: &offset,
 			Type:  xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: tempo.BPM}},
@@ -233,13 +305,35 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 		if chord.Name == "" {
 			continue
 		}
-		position := chord.Position - origin
-		measure := int(position / measureTicks)
+		measure, offset := measures.locate(chord.Position)
 		for len(byMeasure) <= measure {
 			byMeasure = append(byMeasure, nil)
 		}
-		offset := position % measureTicks
 		chordMeasures[measure] = append(chordMeasures[measure], makeHarmony(chord, offset))
+	}
+	timeMeasures := make(map[int]xmlTime)
+	for _, signature := range timeSignatures {
+		measure, _ := measures.locate(signature.Position)
+		for len(byMeasure) <= measure {
+			byMeasure = append(byMeasure, nil)
+		}
+		grouping := signature.BeatGrouping
+		if !signature.PrintCompositeSignature {
+			grouping = nil
+		}
+		timeMeasures[measure] = makeXMLTime(uint64(signature.Numerator), uint64(signature.Denominator), grouping)
+	}
+	keyMeasures := make(map[int]xmlKey)
+	for _, signature := range keySignatures {
+		measure, _ := measures.locate(signature.Position)
+		for len(byMeasure) <= measure {
+			byMeasure = append(byMeasure, nil)
+		}
+		mode := "major"
+		if signature.Minor {
+			mode = "minor"
+		}
+		keyMeasures[measure] = xmlKey{Fifths: int(signature.Fifths), Mode: mode}
 	}
 	if len(byMeasure) == 0 {
 		byMeasure = append(byMeasure, nil)
@@ -259,10 +353,9 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 			if mode != "major" && mode != "minor" {
 				mode = ""
 			}
-			measure.Attributes = &xmlAttributes{
-				Divisions: ticksPerQuarter, Key: xmlKey{Fifths: keyFifths(metadata.Key), Mode: mode},
-				Time: xmlTime{Beats: metadata.TimeSignature[0], BeatType: metadata.TimeSignature[1]},
-			}
+			time := makeXMLTime(metadata.TimeSignature[0], metadata.TimeSignature[1], nil)
+			key := xmlKey{Fifths: keyFifths(metadata.Key), Mode: mode}
+			measure.Attributes = &xmlAttributes{Divisions: ticksPerQuarter, Key: &key, Time: &time}
 			if metadata.BPM > 0 && len(tempos) == 0 {
 				measure.Directions = append(measure.Directions, xmlDirection{
 					Placement: "above",
@@ -271,6 +364,18 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 				})
 			}
 		}
+		if time, ok := timeMeasures[i]; ok {
+			if measure.Attributes == nil {
+				measure.Attributes = &xmlAttributes{}
+			}
+			measure.Attributes.Time = &time
+		}
+		if key, ok := keyMeasures[i]; ok {
+			if measure.Attributes == nil {
+				measure.Attributes = &xmlAttributes{}
+			}
+			measure.Attributes.Key = &key
+		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
 		measure.Directions = append(measure.Directions, tempoMeasures[i]...)
 		measure.Harmonies = append(measure.Harmonies, chordMeasures[i]...)
@@ -278,6 +383,21 @@ func makePart(id string, sequence logicx.MIDISequence, markers []logicx.Marker, 
 		part.Measures = append(part.Measures, measure)
 	}
 	return part
+}
+
+func makeXMLTime(numerator, denominator uint64, grouping []uint8) xmlTime {
+	if numerator == 0 || denominator == 0 {
+		numerator, denominator = 4, 4
+	}
+	beats := strconv.FormatUint(numerator, 10)
+	if len(grouping) != 0 {
+		parts := make([]string, len(grouping))
+		for i, group := range grouping {
+			parts[i] = strconv.Itoa(int(group))
+		}
+		beats = strings.Join(parts, "+")
+	}
+	return xmlTime{Beats: beats, BeatType: uint64(denominator)}
 }
 
 type musicXMLChordKind struct {
@@ -502,9 +622,9 @@ type xmlHarmonyDegree struct {
 }
 
 type xmlAttributes struct {
-	Divisions uint32  `xml:"divisions"`
-	Key       xmlKey  `xml:"key"`
-	Time      xmlTime `xml:"time"`
+	Divisions uint32   `xml:"divisions,omitempty"`
+	Key       *xmlKey  `xml:"key,omitempty"`
+	Time      *xmlTime `xml:"time,omitempty"`
 }
 
 type xmlKey struct {
@@ -513,7 +633,7 @@ type xmlKey struct {
 }
 
 type xmlTime struct {
-	Beats    uint64 `xml:"beats"`
+	Beats    string `xml:"beats"`
 	BeatType uint64 `xml:"beat-type"`
 }
 

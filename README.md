@@ -3,7 +3,7 @@
 Go library for read-only inspection of Logic Pro `.logicx` project bundles.
 It exposes every plist value (including extensionless binary plists) and every
 raw `ProjectData` chunk, plus decoded project metadata, channel strips, Audio
-Units, MIDI note sequences, and markers.
+Units, MIDI note sequences, markers, tempo maps, and key/time signatures.
 
 ```go
 bundle, err := logicx.OpenBundle("song.logicx")
@@ -25,12 +25,13 @@ go run ./cmd/logicx-to-musicxml -o score.musicxml song.logicx
 ```
 
 Sequences with the same Logic name are combined into one MusicXML part.
-Global tempo, key, mode, and time signature come from `MetaData.plist`; markers
-are emitted as rehearsal marks. Region chords stay on their owning sequence;
-decoded project chords get a `Project Chords` staff unless an existing staff
-already contains them, and chords use semantic MusicXML harmony elements.
-Active MIDI-region placement, right-edge cropping, loops, and sampled tempo maps
-are reconstructed; looped notes, region chords, and tempo curves are expanded
+Tempo, key, and time-signature maps are reconstructed, including asymmetric
+beat grouping; markers are emitted as rehearsal marks. Region chords stay on
+their owning sequence; decoded project chords get a `Project Chords` staff
+unless an existing staff already contains them, and chords use semantic
+MusicXML harmony elements.
+Active MIDI-region placement, right-edge cropping, and loops are reconstructed;
+looped notes, region chords, and tempo curves are expanded
 in the exported score. Articulation assignments remain available in raw chunks
 but are not decoded yet.
 

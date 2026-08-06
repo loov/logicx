@@ -12,14 +12,16 @@ import (
 
 // ProjectData contains both lossless chunks and decoded records.
 type ProjectData struct {
-	Header        [24]byte
-	Chunks        []Chunk
-	AudioUnits    []AudioUnit
-	Tracks        []Track
-	Sequences     []MIDISequence
-	Markers       []Marker
-	TempoChanges  []TempoChange
-	ProjectChords []Chord
+	Header         [24]byte
+	Chunks         []Chunk
+	AudioUnits     []AudioUnit
+	Tracks         []Track
+	Sequences      []MIDISequence
+	Markers        []Marker
+	TempoChanges   []TempoChange
+	TimeSignatures []TimeSignatureChange
+	KeySignatures  []KeySignatureChange
+	ProjectChords  []Chord
 }
 
 // Chunk is one lossless ProjectData record. Its semantics are undocumented;
@@ -42,7 +44,8 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	p := ProjectData{
 		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(data),
 		Tracks: findTracks(data), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
-		TempoChanges:  findTempoChanges(chunks),
+		TempoChanges:   findTempoChanges(chunks),
+		TimeSignatures: findTimeSignatureChanges(chunks), KeySignatures: findKeySignatureChanges(chunks),
 		ProjectChords: findProjectChords(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
