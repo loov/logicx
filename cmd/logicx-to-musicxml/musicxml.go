@@ -40,29 +40,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) er
 		return errors.New("no MIDI notes or chords found")
 	}
 
-	origin := logicBarOneTick
-	for _, sequence := range sequences {
-		for _, note := range sequence.Notes {
-			origin = min(origin, note.Position)
-		}
-		for _, chord := range sequence.Chords {
-			origin = min(origin, chord.Position)
-		}
-	}
-	for _, marker := range alternative.Project.Markers {
-		origin = min(origin, marker.Position)
-	}
-	for _, tempo := range alternative.Project.TempoChanges {
-		origin = min(origin, tempo.Position)
-	}
-	for _, signature := range alternative.Project.TimeSignatures {
-		origin = min(origin, signature.Position)
-	}
-	for _, signature := range alternative.Project.KeySignatures {
-		origin = min(origin, signature.Position)
-	}
-
-	origin = snap(uint64(origin), shortestNote)
+	origin := scoreOrigin(alternative, sequences)
 
 	score := xmlScore{Version: "4.0"}
 	for i, sequence := range sequences {
@@ -110,6 +88,33 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) er
 // restMeasure is a bar of silence, used to pad a part out to the score length.
 func restMeasure(number int, length uint32) xmlMeasure {
 	return xmlMeasure{Number: number, length: length, Items: measureItems(nil, length)}
+}
+
+// scoreOrigin is the tick that bar one starts on: Logic's own bar one, unless
+// the project holds something even earlier.
+func scoreOrigin(alternative logicx.Alternative, sequences []scorePart) uint32 {
+	origin := logicBarOneTick
+	for _, sequence := range sequences {
+		for _, note := range sequence.Notes {
+			origin = min(origin, note.Position)
+		}
+		for _, chord := range sequence.Chords {
+			origin = min(origin, chord.Position)
+		}
+	}
+	for _, marker := range alternative.Project.Markers {
+		origin = min(origin, marker.Position)
+	}
+	for _, tempo := range alternative.Project.TempoChanges {
+		origin = min(origin, tempo.Position)
+	}
+	for _, signature := range alternative.Project.TimeSignatures {
+		origin = min(origin, signature.Position)
+	}
+	for _, signature := range alternative.Project.KeySignatures {
+		origin = min(origin, signature.Position)
+	}
+	return snap(uint64(origin), shortestNote)
 }
 
 // scorePart is a sequence together with how its staff is written. A staff with

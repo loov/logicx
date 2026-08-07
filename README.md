@@ -25,6 +25,12 @@ Export the discovered MIDI sequences as MusicXML:
 go run ./cmd/logicx-to-musicxml -o score.musicxml song.logicx
 ```
 
+Pass `-midi` to write the note data beside the score as a Standard MIDI File,
+with Logic's own timing left unquantized. Notation programs quantize and detect
+tuplets when they import MIDI, which they do better than a grid snap here can;
+the MusicXML alongside carries the chord symbols, sections and layout that MIDI
+has no way to express.
+
 Sequences with the same Logic name are combined into one MusicXML part.
 Tempo, key, and time-signature maps are reconstructed, including asymmetric
 beat grouping; markers become bold system text and end the preceding bar with a
