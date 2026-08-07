@@ -148,7 +148,7 @@ func TestScoreSequences_ProjectChordsReuseExistingStaff(t *testing.T) {
 		}}},
 		ProjectChords: []logicx.Chord{chord},
 	}
-	sequences := scoreSequences(project, true)
+	sequences := scoreSequences(project, options{realizeChords: true})
 	if len(sequences) != 1 || sequences[0].Name != "Piano" || len(sequences[0].Chords) != 1 {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
@@ -160,7 +160,7 @@ func TestScoreSequences_RegionChordsStayOnRegionStaff(t *testing.T) {
 			Position: logicBarOneTick, Duration: 960, Name: "Dm", Pitches: []uint8{62, 65, 69},
 		}},
 	}}}
-	sequences := scoreSequences(project, true)
+	sequences := scoreSequences(project, options{realizeChords: true})
 	if len(sequences) != 1 || sequences[0].Name != "Guitar" || len(sequences[0].Notes) != 3 {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
@@ -174,7 +174,7 @@ func TestScoreSequences_RegionChordsPreserveRecordedNotes(t *testing.T) {
 			Position: logicBarOneTick, Duration: 960, Name: "Dm", Pitches: []uint8{62, 65, 69},
 		}},
 	}}}
-	sequences := scoreSequences(project, true)
+	sequences := scoreSequences(project, options{realizeChords: true})
 	if len(sequences) != 1 || len(sequences[0].Notes) != 1 || sequences[0].Notes[0].Pitch != 62 {
 		t.Fatalf("score sequences = %+v", sequences)
 	}
@@ -535,5 +535,24 @@ func TestWriteMusicXML_TripletBeatsNotateAsTuplets(t *testing.T) {
 	}
 	if total != 3_840 {
 		t.Errorf("bar holds %d ticks, want 3840", total)
+	}
+}
+
+func TestQuantizeChords_SnapsSymbolsToTheirOwnGrid(t *testing.T) {
+	chords := []logicx.Chord{
+		{Position: logicBarOneTick + 7, Duration: 1_910, Name: "C"},     // drifted off the beat
+		{Position: logicBarOneTick + 1_925, Duration: 40, Name: "D"},    // too short to notate
+		{Position: logicBarOneTick + 1_960, Duration: 1_880, Name: "E"}, // lands in D's slot
+	}
+	got := quantizeChords(chords, ticksPerQuarter)
+	if len(got) != 2 {
+		t.Fatalf("chords = %d, want 2: the third shares a slot with the second", len(got))
+	}
+	if got[0].Name != "C" || got[0].Position != logicBarOneTick || got[0].Duration != 1_920 {
+		t.Errorf("first chord = %+v", got[0])
+	}
+	// The second keeps its slot, and grows to at least one grid unit.
+	if got[1].Name != "D" || got[1].Position != logicBarOneTick+1_920 || got[1].Duration != ticksPerQuarter {
+		t.Errorf("second chord = %+v", got[1])
 	}
 }

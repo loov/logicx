@@ -30,13 +30,14 @@ const (
 type options struct {
 	realizeChords bool
 	quantize      uint32 // coarsest notation grid, in ticks
+	quantizeChord uint32 // grid chord symbols land on, in ticks
 }
 
 // writeMusicXML renders one project alternative as a MusicXML 4.0 partwise
 // score. Every sequence becomes a part; global markers and the tempo map are
 // attached to the first part only, as MusicXML expects.
 func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) error {
-	sequences := scoreSequences(alternative.Project, opts.realizeChords)
+	sequences := scoreSequences(alternative.Project, opts)
 	if len(sequences) == 0 {
 		return errors.New("no MIDI notes or chords found")
 	}
@@ -129,29 +130,31 @@ type scorePart struct {
 // scoreSequences prepares the parts to export. Sequences without notes are
 // voiced from their chords, and the project chord track either joins a part
 // that already plays it or becomes a part of its own.
-func scoreSequences(project logicx.ProjectData, realizeChords bool) []scorePart {
+func scoreSequences(project logicx.ProjectData, opts options) []scorePart {
 	merged := mergeSequences(project.Sequences)
 	sequences := make([]scorePart, len(merged))
 	for i, sequence := range merged {
+		sequence.Chords = quantizeChords(sequence.Chords, opts.quantizeChord)
 		sequences[i] = scorePart{MIDISequence: sequence}
 		if len(sequence.Notes) != 0 {
 			continue
 		}
-		if realizeChords {
+		if opts.realizeChords {
 			sequences[i].Notes = chordNotes(sequence.Chords)
 		} else {
 			sequences[i].slash = true
 		}
 	}
-	if len(project.ProjectChords) == 0 {
+	projectChords := quantizeChords(project.ProjectChords, opts.quantizeChord)
+	if len(projectChords) == 0 {
 		return sequences
 	}
-	if i := chordStaff(sequences, project.ProjectChords); i >= 0 {
-		sequences[i].Chords = append(sequences[i].Chords, project.ProjectChords...)
+	if i := chordStaff(sequences, projectChords); i >= 0 {
+		sequences[i].Chords = append(sequences[i].Chords, projectChords...)
 		return sequences
 	}
-	chords := scorePart{MIDISequence: logicx.MIDISequence{Name: "Project Chords", Chords: project.ProjectChords}}
-	if realizeChords {
+	chords := scorePart{MIDISequence: logicx.MIDISequence{Name: "Project Chords", Chords: projectChords}}
+	if opts.realizeChords {
 		chords.Notes = chordNotes(chords.Chords)
 	} else {
 		chords.slash = true
@@ -215,6 +218,33 @@ func chordNotes(chords []logicx.Chord) []logicx.MIDINote {
 		}
 	}
 	return notes
+}
+
+// quantizeChords snaps chord symbols onto their own grid, which is coarser
+// than the note grid: a chord change is heard on the beat even when the playing
+// drifts, and two symbols a few ticks apart read as one chord written twice.
+func quantizeChords(chords []logicx.Chord, grid uint32) []logicx.Chord {
+	if len(chords) == 0 || grid == 0 {
+		return chords
+	}
+	quantized := make([]logicx.Chord, 0, len(chords))
+	for _, chord := range chords {
+		start := snap(uint64(chord.Position), grid)
+		end := max(snap(uint64(chord.Position)+uint64(chord.Duration), grid), start+grid)
+		if len(quantized) > 0 {
+			previous := &quantized[len(quantized)-1]
+			// Two chords in one slot cannot both be shown; the first holds it.
+			if start <= previous.Position {
+				continue
+			}
+			if previous.Position+previous.Duration > start {
+				previous.Duration = start - previous.Position
+			}
+		}
+		chord.Position, chord.Duration = start, end-start
+		quantized = append(quantized, chord)
+	}
+	return quantized
 }
 
 // chordStaff returns the index of the part that already plays every chord

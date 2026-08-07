@@ -23,7 +23,9 @@ const midiVelocity = 80
 // the file: notation programs quantize and detect tuplets when they import
 // MIDI, and they do it better than a grid snap here can.
 func writeMIDI(w io.Writer, alternative logicx.Alternative) error {
-	sequences := scoreSequences(alternative.Project, true)
+	// Realized chords, unquantized: this file exists for a program that would
+	// rather quantize the raw performance itself.
+	sequences := scoreSequences(alternative.Project, options{realizeChords: true})
 	origin := scoreOrigin(alternative, sequences)
 
 	tracks := [][]byte{conductorTrack(alternative, origin)}

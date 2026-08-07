@@ -22,15 +22,20 @@ func main() {
 	output := flag.String("o", "", "output file (default: stdout)")
 	alternative := flag.String("alternative", "", "project alternative (default: first)")
 	realizeChords := flag.Bool("realize-chords", false, "write chord staves as voiced pitches instead of rhythm slashes")
-	quantize := flag.String("quantize", "1/16", "coarsest note value to snap timing to (1/4, 1/8, 1/16, 1/32, 1/64)")
+	quantize := flag.String("quantize", "1/16", "coarsest note value to snap note timing to (1/1 to 1/64)")
+	quantizeChords := flag.String("quantize-chords", "1/4", "note value to snap chord symbols to (1/1 to 1/64)")
 	midi := flag.Bool("midi", false, "also write the unquantized note data beside -o as a Standard MIDI File")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: logicx-to-musicxml [-o score.musicxml] [-alternative 000] [-quantize 1/16] [-realize-chords] [-midi] project.logicx")
+		fmt.Fprintln(os.Stderr, "usage: logicx-to-musicxml [-o score.musicxml] [-alternative 000] [-quantize 1/16] [-quantize-chords 1/4] [-realize-chords] [-midi] project.logicx")
 		os.Exit(2)
 	}
 
 	grid, err := quantizeGrid(*quantize)
+	if err != nil {
+		fatal(err)
+	}
+	chordGrid, err := quantizeGrid(*quantizeChords)
 	if err != nil {
 		fatal(err)
 	}
@@ -45,7 +50,7 @@ func main() {
 	}
 
 	var document bytes.Buffer
-	if err := writeMusicXML(&document, alt, options{realizeChords: *realizeChords, quantize: grid}); err != nil {
+	if err := writeMusicXML(&document, alt, options{realizeChords: *realizeChords, quantize: grid, quantizeChord: chordGrid}); err != nil {
 		fatal(err)
 	}
 	if *output == "" {
@@ -82,8 +87,8 @@ func midiPath(score string) string {
 // quantizeGrid turns a note-value flag such as "1/16" into ticks.
 func quantizeGrid(value string) (uint32, error) {
 	divisor, err := strconv.ParseUint(strings.TrimPrefix(value, "1/"), 10, 32)
-	if err != nil || !strings.HasPrefix(value, "1/") || divisor < 4 || divisor > 64 || divisor&(divisor-1) != 0 {
-		return 0, fmt.Errorf("quantize: %q is not one of 1/4, 1/8, 1/16, 1/32, 1/64", value)
+	if err != nil || !strings.HasPrefix(value, "1/") || divisor < 1 || divisor > 64 || divisor&(divisor-1) != 0 {
+		return 0, fmt.Errorf("%q is not a note value from 1/1 to 1/64", value)
 	}
 	return uint32(uint64(ticksPerQuarter) * 4 / divisor), nil
 }
