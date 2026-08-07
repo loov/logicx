@@ -51,7 +51,7 @@ func TestWriteMusicXML(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative, true); err != nil {
+	if err := writeMusicXML(&output, alternative, options{realizeChords: true, quantize: ticksPerQuarter / 4}); err != nil {
 		t.Fatal(err)
 	}
 	xml := output.String()
@@ -97,7 +97,7 @@ func TestWriteMusicXML_ProjectChordsGetSeparateStaff(t *testing.T) {
 		}}},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative, true); err != nil {
+	if err := writeMusicXML(&output, alternative, options{realizeChords: true, quantize: ticksPerQuarter / 4}); err != nil {
 		t.Fatal(err)
 	}
 	xml := output.String()
@@ -198,7 +198,7 @@ func TestWriteMusicXML_NotatableAndMonophonicVoices(t *testing.T) {
 		}},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative, true); err != nil {
+	if err := writeMusicXML(&output, alternative, options{realizeChords: true, quantize: ticksPerQuarter / 4}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -259,7 +259,7 @@ func TestWriteMusicXML_MarkersOpenSectionsWithDoubleBarlines(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative, true); err != nil {
+	if err := writeMusicXML(&output, alternative, options{realizeChords: true, quantize: ticksPerQuarter / 4}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -327,7 +327,7 @@ func TestWriteMusicXML_ChordStaffWritesOneSlashPerBeat(t *testing.T) {
 	parse := func(t *testing.T, realizeChords bool) []note {
 		t.Helper()
 		var output bytes.Buffer
-		if err := writeMusicXML(&output, alternative, realizeChords); err != nil {
+		if err := writeMusicXML(&output, alternative, options{realizeChords: realizeChords, quantize: ticksPerQuarter / 4}); err != nil {
 			t.Fatal(err)
 		}
 		var score struct {
@@ -390,7 +390,7 @@ func TestWriteMusicXML_GapsAndEmptyBarsBecomeRests(t *testing.T) {
 		}}},
 	}
 	var output bytes.Buffer
-	if err := writeMusicXML(&output, alternative, false); err != nil {
+	if err := writeMusicXML(&output, alternative, options{quantize: ticksPerQuarter / 4}); err != nil {
 		t.Fatal(err)
 	}
 	var score struct {
@@ -428,5 +428,35 @@ func TestWriteMusicXML_GapsAndEmptyBarsBecomeRests(t *testing.T) {
 	}
 	if rest := measures[1].Notes[0].Rest; len(measures[1].Notes) != 1 || rest == nil || rest.Measure != "yes" {
 		t.Errorf("silent bar = %+v, want one whole-measure rest", measures[1].Notes)
+	}
+}
+
+func TestQuantizeNotes_RefinesTheGridForFastRuns(t *testing.T) {
+	const sixteenth = ticksPerQuarter / 4
+	notes := []logicx.MIDINote{
+		// Two sloppy quarters, then a run of 32nds that a 1/16 grid would
+		// collapse onto one another.
+		{Position: 0, Pitch: 60, Duration: 947},
+		{Position: 971, Pitch: 62, Duration: 940},
+		{Position: 1_920, Pitch: 64, Duration: 110},
+		{Position: 2_042, Pitch: 65, Duration: 115},
+		{Position: 2_160, Pitch: 67, Duration: 120},
+	}
+	got := quantizeNotes(notes, sixteenth)
+	want := []struct{ position, duration uint32 }{
+		{0, 960}, {960, 960}, {1_920, 120}, {2_040, 120}, {2_160, 120},
+	}
+	for i, note := range got {
+		if note.Position != want[i].position || note.Duration != want[i].duration {
+			t.Errorf("note %d at %d for %d, want %d for %d",
+				i, note.Position, note.Duration, want[i].position, want[i].duration)
+		}
+	}
+	// A note that stopped before the next began must not grow over it.
+	for i := 1; i < len(got); i++ {
+		if notes[i-1].Position+notes[i-1].Duration <= notes[i].Position &&
+			got[i-1].Position+got[i-1].Duration > got[i].Position {
+			t.Errorf("note %d now overlaps note %d", i-1, i)
+		}
 	}
 }

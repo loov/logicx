@@ -34,9 +34,10 @@ chords get a `Project Chords` staff unless an existing staff already contains
 them, and chords use semantic MusicXML harmony elements. A staff with no
 recorded notes is written as a chord chart, one rhythm slash per beat; pass
 `-realize-chords` to voice the chord tones as pitches instead.
-Timing is snapped to a 64th-note grid and durations are split into tied
-notatable values, so raw performance data (a Melodyne transcription, say) still
-produces a score notation programs will open. Notes that overlap within a part
+Timing is snapped to a notation grid — `-quantize`, a 1/16 note by default,
+refined automatically where notes crowd closer than that — and durations are
+split into tied notatable values, so raw performance data (a Melodyne
+transcription, say) still produces a readable score. Notes that overlap within a part
 are spread across voices, and silence in the first voice is written out as
 rests.
 Active MIDI-region placement, right-edge cropping, and loops are reconstructed;

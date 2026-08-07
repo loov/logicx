@@ -25,11 +25,17 @@ const (
 	maxMeasures = 100_000
 )
 
+// options are the export choices the command line offers.
+type options struct {
+	realizeChords bool
+	quantize      uint32 // coarsest notation grid, in ticks
+}
+
 // writeMusicXML renders one project alternative as a MusicXML 4.0 partwise
 // score. Every sequence becomes a part; global markers and the tempo map are
 // attached to the first part only, as MusicXML expects.
-func writeMusicXML(w io.Writer, alternative logicx.Alternative, realizeChords bool) error {
-	sequences := scoreSequences(alternative.Project, realizeChords)
+func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) error {
+	sequences := scoreSequences(alternative.Project, opts.realizeChords)
 	if len(sequences) == 0 {
 		return errors.New("no MIDI notes or chords found")
 	}
@@ -56,7 +62,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, realizeChords bo
 		origin = min(origin, signature.Position)
 	}
 
-	origin = quantize(uint64(origin))
+	origin = snap(uint64(origin), shortestNote)
 
 	score := xmlScore{Version: "4.0"}
 	for i, sequence := range sequences {
@@ -69,7 +75,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, realizeChords bo
 		score.Parts = append(score.Parts, makePart(
 			id, sequence.MIDISequence, sequence.slash,
 			alternative.Project.Markers, i == 0, tempos, alternative.Project.TimeSignatures,
-			alternative.Project.KeySignatures, alternative.Metadata, origin,
+			alternative.Project.KeySignatures, alternative.Metadata, origin, opts.quantize,
 		))
 	}
 
@@ -240,12 +246,75 @@ func chordStaff(sequences []scorePart, chords []logicx.Chord) int {
 // shortestNote is the finest value the exporter notates, a 64th note.
 const shortestNote = 960 / 16 // ticksPerQuarter / 16, kept untyped
 
-// quantize snaps a tick value onto the shortestNote grid. Logic stores raw
-// performance timing — audio transcriptions in particular — and notation
-// cannot render off-grid positions or durations at all.
-func quantize(ticks uint64) uint32 {
-	const limit = uint64(^uint32(0)) / shortestNote * shortestNote
-	return uint32(min((ticks+shortestNote/2)/shortestNote*shortestNote, limit))
+// snap rounds a tick value onto a grid. Logic stores raw performance timing —
+// audio transcriptions in particular — and notation cannot render off-grid
+// positions or durations at all.
+func snap(ticks uint64, grid uint32) uint32 {
+	limit := uint64(^uint32(0)) / uint64(grid) * uint64(grid)
+	return uint32(min((ticks+uint64(grid)/2)/uint64(grid)*uint64(grid), limit))
+}
+
+// noteGrid halves the grid until it is fine enough for span, the tightest
+// spacing around a note. A fast run quantized on the coarse grid would collapse
+// onto one beat, so it earns a finer one.
+func noteGrid(span uint64, coarsest uint32) uint32 {
+	grid := coarsest
+	for grid > shortestNote && span < uint64(grid) {
+		grid /= 2
+	}
+	return grid
+}
+
+// quantizeNotes snaps a sequence onto the notation grid. Notes that sound
+// together share an onset and so share a grid, and a note that ended before the
+// next one began still does, so quantizing never invents an overlap.
+func quantizeNotes(notes []logicx.MIDINote, coarsest uint32) []logicx.MIDINote {
+	if len(notes) == 0 {
+		return nil
+	}
+	quantized := slices.Clone(notes)
+	slices.SortFunc(quantized, func(a, b logicx.MIDINote) int { return cmp.Compare(a.Position, b.Position) })
+
+	// Onsets, with the shortest note sounding at each.
+	var onsets, shortest []uint32
+	for _, note := range quantized {
+		if len(onsets) == 0 || onsets[len(onsets)-1] != note.Position {
+			onsets = append(onsets, note.Position)
+			shortest = append(shortest, note.Duration)
+			continue
+		}
+		shortest[len(shortest)-1] = min(shortest[len(shortest)-1], note.Duration)
+	}
+
+	grids := make([]uint32, len(onsets))
+	starts := make([]uint32, len(onsets))
+	for i, onset := range onsets {
+		span := uint64(shortest[i])
+		if i > 0 {
+			span = min(span, uint64(onset)-uint64(onsets[i-1]))
+		}
+		if i+1 < len(onsets) {
+			span = min(span, uint64(onsets[i+1])-uint64(onset))
+		}
+		grids[i] = noteGrid(span, coarsest)
+		starts[i] = snap(uint64(onset), grids[i])
+	}
+
+	at := 0
+	for i := range quantized {
+		note := &quantized[i]
+		for onsets[at] != note.Position {
+			at++
+		}
+		grid := grids[at]
+		start := starts[at]
+		end := max(snap(uint64(note.Position)+uint64(note.Duration), grid), start+grid)
+		if at+1 < len(onsets) && uint64(note.Position)+uint64(note.Duration) <= uint64(onsets[at+1]) {
+			end = min(end, max(starts[at+1], start+grid))
+		}
+		note.Position, note.Duration = start, end-start
+	}
+	return quantized
 }
 
 // notatable returns the longest prefix of a grid-aligned duration that maps to
@@ -411,9 +480,10 @@ func makePart(
 	keySignatures []logicx.KeySignatureChange,
 	metadata logicx.Metadata,
 	origin uint32,
+	quantizeGrid uint32,
 ) xmlPart {
 	measures := newMeasureMap(origin, metadata, timeSignatures)
-	notes := sequence.Notes
+	notes := quantizeNotes(sequence.Notes, quantizeGrid)
 	if slash {
 		notes = slashNotes(sequence.Chords, measures)
 	}
@@ -424,9 +494,8 @@ func makePart(
 		}
 		// ponytail: sub-tick position fractions are dropped; use a higher
 		// divisions value if real projects need them.
-		// Both ends snap to the grid, so notes that met exactly still meet.
-		position := quantize(uint64(note.Position))
-		remaining := max(quantize(uint64(note.Position)+uint64(note.Duration))-position, shortestNote)
+		position := note.Position
+		remaining := max(note.Duration, shortestNote)
 		first := true
 		for remaining > 0 {
 			measure, within := measures.locate(position)
