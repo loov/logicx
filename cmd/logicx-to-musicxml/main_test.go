@@ -58,6 +58,7 @@ func TestWriteMusicXML(t *testing.T) {
 	for _, want := range []string{
 		`<score-partwise version="4.0">`, `<part-name>Trumpet</part-name>`, `<fifths>1</fifths>`,
 		`<sound tempo="120"></sound>`, `<sound tempo="90"></sound>`, `<offset>1920</offset>`,
+		`<per-minute>120</per-minute>`, `<per-minute>90</per-minute>`,
 		`<chord></chord>`, `<tie type="start"></tie>`, `<tie type="stop"></tie>`,
 		`<words font-weight="bold" enclosure="rectangle">Chorus</words>`, `<beats>2+3</beats>`, `<beat-type>8</beat-type>`,
 		`<fifths>-6</fifths>`, `<mode>minor</mode>`,
@@ -554,5 +555,21 @@ func TestQuantizeChords_SnapsSymbolsToTheirOwnGrid(t *testing.T) {
 	// The second keeps its slot, and grows to at least one grid unit.
 	if got[1].Name != "D" || got[1].Position != logicBarOneTick+1_920 || got[1].Duration != ticksPerQuarter {
 		t.Errorf("second chord = %+v", got[1])
+	}
+}
+
+func TestPrintedTempo_RoundsForTheStaffOnly(t *testing.T) {
+	for _, test := range []struct {
+		bpm  float64
+		want string
+	}{
+		{132.99989318847656, "133"},
+		{114.98590087890625, "114.99"},
+		{128.00379943847656, "128"},
+		{60, "60"},
+	} {
+		if got := printedTempo(test.bpm); got != test.want {
+			t.Errorf("printedTempo(%v) = %q, want %q", test.bpm, got, test.want)
+		}
 	}
 }

@@ -713,7 +713,7 @@ func makePart(
 		}
 		tempoMeasures[measure] = append(tempoMeasures[measure], xmlDirection{
 			Placement: "above", Offset: &offset,
-			Type:  xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: tempo.BPM}},
+			Type:  xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: printedTempo(tempo.BPM)}},
 			Sound: &xmlSound{Tempo: tempo.BPM},
 		})
 	}
@@ -775,7 +775,7 @@ func makePart(
 			if metadata.BPM > 0 && len(tempos) == 0 {
 				measure.Directions = append(measure.Directions, xmlDirection{
 					Placement: "above",
-					Type:      xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: metadata.BPM}},
+					Type:      xmlDirectionType{Metronome: &xmlMetronome{BeatUnit: "quarter", PerMinute: printedTempo(metadata.BPM)}},
 					Sound:     &xmlSound{Tempo: metadata.BPM},
 				})
 			}
@@ -1373,10 +1373,17 @@ type xmlDirectionType struct {
 	Words     *xmlWords     `xml:"words,omitempty"`
 }
 
+// printedTempo rounds a tempo for the metronome mark above the staff. Logic
+// stores it as a float, so a plain 133 arrives as 132.99989318847656 and would
+// be printed in full. The sound element keeps the exact value for playback.
+func printedTempo(bpm float64) string {
+	return strconv.FormatFloat(math.Round(bpm*100)/100, 'f', -1, 64)
+}
+
 // xmlMetronome is a printed metronome mark.
 type xmlMetronome struct {
-	BeatUnit  string  `xml:"beat-unit"`
-	PerMinute float64 `xml:"per-minute"`
+	BeatUnit  string `xml:"beat-unit"`
+	PerMinute string `xml:"per-minute"`
 }
 
 // xmlSound is a sound element carrying playback tempo.
