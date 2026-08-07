@@ -442,7 +442,7 @@ func TestQuantizeNotes_RefinesTheGridForFastRuns(t *testing.T) {
 		{Position: 2_042, Pitch: 65, Duration: 115},
 		{Position: 2_160, Pitch: 67, Duration: 120},
 	}
-	got := quantizeNotes(notes, sixteenth)
+	got := quantizeNotes(notes, sixteenth, beatGrid{})
 	want := []struct{ position, duration uint32 }{
 		{0, 960}, {960, 960}, {1_920, 120}, {2_040, 120}, {2_160, 120},
 	}
@@ -458,5 +458,82 @@ func TestQuantizeNotes_RefinesTheGridForFastRuns(t *testing.T) {
 			got[i-1].Position+got[i-1].Duration > got[i].Position {
 			t.Errorf("note %d now overlaps note %d", i-1, i)
 		}
+	}
+}
+
+func TestWriteMusicXML_TripletBeatsNotateAsTuplets(t *testing.T) {
+	// Bar 1 beat 1: three eighth-note triplets, played a little loose. Beat 2:
+	// two straight eighths. The rest of the bar is silent.
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{Sequences: []logicx.MIDISequence{{
+			Name: "Lead", Notes: []logicx.MIDINote{
+				{Position: logicBarOneTick + 3, Pitch: 60, Duration: 310},
+				{Position: logicBarOneTick + 327, Pitch: 62, Duration: 300},
+				{Position: logicBarOneTick + 634, Pitch: 64, Duration: 320},
+				{Position: logicBarOneTick + 960, Pitch: 65, Duration: 480},
+				{Position: logicBarOneTick + 1_440, Pitch: 67, Duration: 480},
+			},
+		}}},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative, options{quantize: ticksPerQuarter / 4}); err != nil {
+		t.Fatal(err)
+	}
+	var score struct {
+		Parts []struct {
+			Measures []struct {
+				Notes []struct {
+					Duration         uint32 `xml:"duration"`
+					Type             string `xml:"type"`
+					TimeModification *struct {
+						Actual int `xml:"actual-notes"`
+						Normal int `xml:"normal-notes"`
+					} `xml:"time-modification"`
+					Notations struct {
+						Tuplets []struct {
+							Type string `xml:"type,attr"`
+						} `xml:"tuplet"`
+					} `xml:"notations"`
+				} `xml:"note"`
+			} `xml:"measure"`
+		} `xml:"part"`
+	}
+	if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+		t.Fatal(err)
+	}
+	notes := score.Parts[0].Measures[0].Notes
+
+	// The first three notes are the tuplet, bracketed and scaled 3:2.
+	for i := range 3 {
+		note := notes[i]
+		if note.Duration != 320 || note.Type != "eighth" {
+			t.Errorf("triplet note %d = %d ticks, type %q", i, note.Duration, note.Type)
+		}
+		if note.TimeModification == nil || note.TimeModification.Actual != 3 || note.TimeModification.Normal != 2 {
+			t.Errorf("triplet note %d has no 3:2 scaling", i)
+		}
+	}
+	if got := len(notes[0].Notations.Tuplets); got != 1 || notes[0].Notations.Tuplets[0].Type != "start" {
+		t.Errorf("tuplet does not open on the first note: %+v", notes[0].Notations.Tuplets)
+	}
+	if got := len(notes[2].Notations.Tuplets); got != 1 || notes[2].Notations.Tuplets[0].Type != "stop" {
+		t.Errorf("tuplet does not close on the third note: %+v", notes[2].Notations.Tuplets)
+	}
+
+	// The straight beat that follows keeps out of it.
+	for i := 3; i < 5; i++ {
+		if notes[i].Duration != 480 || notes[i].TimeModification != nil {
+			t.Errorf("straight note %d = %d ticks, scaling %+v", i, notes[i].Duration, notes[i].TimeModification)
+		}
+	}
+
+	// The bar still adds up.
+	var total uint32
+	for _, note := range notes {
+		total += note.Duration
+	}
+	if total != 3_840 {
+		t.Errorf("bar holds %d ticks, want 3840", total)
 	}
 }

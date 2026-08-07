@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -87,7 +88,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) er
 
 // restMeasure is a bar of silence, used to pad a part out to the score length.
 func restMeasure(number int, length uint32) xmlMeasure {
-	return xmlMeasure{Number: number, length: length, Items: measureItems(nil, length)}
+	return xmlMeasure{Number: number, length: length, Items: measureItems(nil, length, beatGrid{})}
 }
 
 // scoreOrigin is the tick that bar one starts on: Logic's own bar one, unless
@@ -270,10 +271,104 @@ func noteGrid(span uint64, coarsest uint32) uint32 {
 	return grid
 }
 
+// notatable returns the longest prefix of a grid-aligned duration that maps to
+// a single note value, optionally dotted or double-dotted. Anything else has
+// to become a tied chain: MuseScore refuses to open a score containing a note
+// it cannot render, such as Melodyne's raw 1200-tick notes.
+func notatable(duration uint32) uint32 {
+	for value := ticksPerQuarter * 8; value >= shortestNote; value /= 2 {
+		for _, dotted := range [...]uint32{value * 7 / 4, value * 3 / 2, value} {
+			if dotted <= duration {
+				return dotted
+			}
+		}
+	}
+	return duration
+}
+
+// beatGrid describes the beats of one stretch of music and which of them hold
+// a triplet. Beat starts are measured from whatever the caller anchors them to:
+// project ticks while quantizing, measure ticks while writing a measure.
+type beatGrid struct {
+	beat    uint32
+	triplet map[uint32]bool
+}
+
+// at returns the beat containing position and whether it is a triplet.
+func (g beatGrid) at(position uint32) (start uint32, triplet bool) {
+	if g.beat == 0 {
+		return 0, false
+	}
+	start = position / g.beat * g.beat
+	return start, g.triplet[start]
+}
+
+// nextTriplet returns the first triplet beat starting after position and before
+// limit, so a note can be cut where a tuplet begins.
+func (g beatGrid) nextTriplet(position, limit uint32) (uint32, bool) {
+	if g.beat == 0 {
+		return 0, false
+	}
+	for start := position/g.beat*g.beat + g.beat; start < limit; start += g.beat {
+		if g.triplet[start] {
+			return start, true
+		}
+	}
+	return 0, false
+}
+
+// offGrid is how far a position sits from the nearest line of a grid anchored
+// at anchor.
+func offGrid(position, anchor, grid uint32) uint64 {
+	within := uint64(position - anchor)
+	return min(within%uint64(grid), uint64(grid)-within%uint64(grid))
+}
+
+// findTripletBeats picks out the beats whose onsets sit closer to a third of a
+// beat than to the straight grid. Logic records what was played, so a triplet
+// arrives as three notes no straight grid can express, and quantizing them
+// straight collapses two of them onto one line.
+func findTripletBeats(notes []logicx.MIDINote, measures *measureMap, coarsest uint32) beatGrid {
+	grid := beatGrid{triplet: map[uint32]bool{}}
+	onsets := make(map[uint32][]uint32)
+	for _, note := range notes {
+		if note.Duration == 0 {
+			continue
+		}
+		measure, within := measures.locate(note.Position)
+		beat := measures.beats[measure]
+		grid.beat = beat
+		start := measures.starts[measure] + within/beat*beat
+		if last := onsets[start]; len(last) == 0 || last[len(last)-1] != note.Position {
+			onsets[start] = append(onsets[start], note.Position)
+		}
+	}
+	for start, positions := range onsets {
+		measure, _ := measures.locate(start)
+		beat := measures.beats[measure]
+		slot := beat / 3
+		// One stray onset is more likely a late note than a triplet, and a
+		// slot finer than the shortest note cannot be written down.
+		if len(positions) < 2 || slot < shortestNote || beat%3 != 0 {
+			continue
+		}
+		var straight, thirds uint64
+		for _, position := range positions {
+			straight += offGrid(position, start, coarsest)
+			thirds += offGrid(position, start, slot)
+		}
+		if straight > 0 && thirds*2 < straight {
+			grid.triplet[start] = true
+		}
+	}
+	return grid
+}
+
 // quantizeNotes snaps a sequence onto the notation grid. Notes that sound
 // together share an onset and so share a grid, and a note that ended before the
-// next one began still does, so quantizing never invents an overlap.
-func quantizeNotes(notes []logicx.MIDINote, coarsest uint32) []logicx.MIDINote {
+// next one began still does, so quantizing never invents an overlap. Onsets
+// inside a triplet beat snap to thirds of that beat instead.
+func quantizeNotes(notes []logicx.MIDINote, coarsest uint32, triplets beatGrid) []logicx.MIDINote {
 	if len(notes) == 0 {
 		return nil
 	}
@@ -291,7 +386,19 @@ func quantizeNotes(notes []logicx.MIDINote, coarsest uint32) []logicx.MIDINote {
 		shortest[len(shortest)-1] = min(shortest[len(shortest)-1], note.Duration)
 	}
 
+	// gridAt returns the grid a tick quantizes on, and what it is anchored to.
+	gridAt := func(position uint32, span uint64) (grid, anchor uint32) {
+		if start, ok := triplets.at(position); ok {
+			return triplets.beat / 3, start
+		}
+		return noteGrid(span, coarsest), 0
+	}
+	snapIn := func(position, grid, anchor uint32) uint32 {
+		return anchor + snap(uint64(position-anchor), grid)
+	}
+
 	grids := make([]uint32, len(onsets))
+	anchors := make([]uint32, len(onsets))
 	starts := make([]uint32, len(onsets))
 	for i, onset := range onsets {
 		span := uint64(shortest[i])
@@ -301,8 +408,8 @@ func quantizeNotes(notes []logicx.MIDINote, coarsest uint32) []logicx.MIDINote {
 		if i+1 < len(onsets) {
 			span = min(span, uint64(onsets[i+1])-uint64(onset))
 		}
-		grids[i] = noteGrid(span, coarsest)
-		starts[i] = snap(uint64(onset), grids[i])
+		grids[i], anchors[i] = gridAt(onset, span)
+		starts[i] = snapIn(onset, grids[i], anchors[i])
 	}
 
 	at := 0
@@ -311,30 +418,23 @@ func quantizeNotes(notes []logicx.MIDINote, coarsest uint32) []logicx.MIDINote {
 		for onsets[at] != note.Position {
 			at++
 		}
-		grid := grids[at]
-		start := starts[at]
-		end := max(snap(uint64(note.Position)+uint64(note.Duration), grid), start+grid)
-		if at+1 < len(onsets) && uint64(note.Position)+uint64(note.Duration) <= uint64(onsets[at+1]) {
-			end = min(end, max(starts[at+1], start+grid))
+		grid, start := grids[at], starts[at]
+		// The end quantizes on the grid of the beat it falls in, which is not
+		// always the beat the note began in.
+		stop := uint64(note.Position) + uint64(note.Duration)
+		endGrid, endAnchor := grid, anchors[at]
+		if endStart, ok := triplets.at(uint32(min(stop, math.MaxUint32))); ok {
+			endGrid, endAnchor = triplets.beat/3, endStart
+		} else if anchors[at] != 0 {
+			endGrid, endAnchor = noteGrid(uint64(note.Duration), coarsest), 0
+		}
+		end := max(snapIn(uint32(min(stop, math.MaxUint32)), endGrid, endAnchor), start+endGrid)
+		if at+1 < len(onsets) && stop <= uint64(onsets[at+1]) {
+			end = min(end, max(starts[at+1], start+endGrid))
 		}
 		note.Position, note.Duration = start, end-start
 	}
 	return quantized
-}
-
-// notatable returns the longest prefix of a grid-aligned duration that maps to
-// a single note value, optionally dotted or double-dotted. Anything else has
-// to become a tied chain: MuseScore refuses to open a score containing a note
-// it cannot render, such as Melodyne's raw 1200-tick notes.
-func notatable(duration uint32) uint32 {
-	for value := ticksPerQuarter * 8; value >= shortestNote; value /= 2 {
-		for _, dotted := range [...]uint32{value * 7 / 4, value * 3 / 2, value} {
-			if dotted <= duration {
-				return dotted
-			}
-		}
-	}
-	return duration
 }
 
 // slashPitch is where a rhythm slash sits on the staff, the middle line of a
@@ -488,11 +588,13 @@ func makePart(
 	quantizeGrid uint32,
 ) xmlPart {
 	measures := newMeasureMap(origin, metadata, timeSignatures)
-	notes := quantizeNotes(sequence.Notes, quantizeGrid)
+	triplets := findTripletBeats(sequence.Notes, measures, quantizeGrid)
+	notes := quantizeNotes(sequence.Notes, quantizeGrid, triplets)
 	if slash {
-		notes = slashNotes(sequence.Chords, measures)
+		notes, triplets = slashNotes(sequence.Chords, measures), beatGrid{}
 	}
 	var byMeasure [][]noteSegment
+	var gridByMeasure []beatGrid
 	for _, note := range notes {
 		if note.Duration == 0 {
 			continue
@@ -507,7 +609,19 @@ func makePart(
 			for len(byMeasure) <= measure {
 				byMeasure = append(byMeasure, nil)
 			}
-			duration := notatable(min(remaining, measures.durations[measure]-within))
+			duration := min(remaining, measures.durations[measure]-within)
+			// A tuplet is written inside its own beat, so nothing may straddle
+			// the edge of one.
+			beatStart, inTriplet := triplets.at(position)
+			switch next, ok := triplets.nextTriplet(position, position+duration); {
+			case inTriplet:
+				duration = min(duration, beatStart+triplets.beat-position)
+			case ok:
+				duration = min(duration, next-position)
+			}
+			if !inTriplet {
+				duration = notatable(duration)
+			}
 			byMeasure[measure] = append(byMeasure[measure], noteSegment{
 				Start: within, Duration: duration, Pitch: note.Pitch,
 				Lyrics:             note.Lyrics,
@@ -519,6 +633,15 @@ func makePart(
 				TieStart:           !first && !slash, TieEnd: remaining > duration && !slash,
 				Slash: slash,
 			})
+			for len(gridByMeasure) <= measure {
+				gridByMeasure = append(gridByMeasure, beatGrid{})
+			}
+			if inTriplet {
+				if gridByMeasure[measure].triplet == nil {
+					gridByMeasure[measure] = beatGrid{beat: triplets.beat, triplet: map[uint32]bool{}}
+				}
+				gridByMeasure[measure].triplet[beatStart-measures.starts[measure]] = true
+			}
 			note.ScoreArticulations = nil
 			note.ScoreFermatas = nil
 			note.ScoreOrnaments = nil
@@ -645,7 +768,11 @@ func makePart(
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
 		measure.Directions = append(measure.Directions, tempoMeasures[i]...)
 		measure.Harmonies = append(measure.Harmonies, chordMeasures[i]...)
-		measure.Items = measureItems(notes, measures.durations[i])
+		grid := beatGrid{}
+		if i < len(gridByMeasure) {
+			grid = gridByMeasure[i]
+		}
+		measure.Items = measureItems(notes, measures.durations[i], grid)
 		part.Measures = append(part.Measures, measure)
 	}
 	return part
@@ -812,7 +939,7 @@ func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
 // the MusicXML cursor forward or back between them. Segments that share a
 // start and a duration become one chord; each voice is written in turn, backing
 // the cursor up to the barline in between.
-func measureItems(notes []noteSegment, duration uint32) []xmlMeasureItem {
+func measureItems(notes []noteSegment, duration uint32, grid beatGrid) []xmlMeasureItem {
 	voices := 0
 	for _, segment := range notes {
 		voices = max(voices, segment.Voice)
@@ -842,18 +969,20 @@ func measureItems(notes []noteSegment, duration uint32) []xmlMeasureItem {
 			chord := !first && segment.Start == previous.Start && segment.Duration == previous.Duration
 			if !chord {
 				if segment.Start > cursor {
-					items = append(items, restItems(segment.Start-cursor, voice)...)
+					items = append(items, restItems(cursor, segment.Start-cursor, voice, grid)...)
 				} else if segment.Start < cursor {
 					items = append(items, xmlMeasureItem{Backup: &xmlMove{Duration: cursor - segment.Start}})
 				}
 				cursor = segment.Start + segment.Duration
 			}
-			items = append(items, xmlMeasureItem{Note: makeXMLNote(segment, chord)})
+			note := makeXMLNote(segment, chord)
+			markTuplet(note, grid, segment.Start, chord)
+			items = append(items, xmlMeasureItem{Note: note})
 			previous = segment
 			first = false
 		}
 		if !first && cursor < duration {
-			items = append(items, restItems(duration-cursor, voice)...)
+			items = append(items, restItems(cursor, duration-cursor, voice, grid)...)
 			cursor = duration
 		}
 	}
@@ -863,19 +992,76 @@ func measureItems(notes []noteSegment, duration uint32) []xmlMeasureItem {
 // restItems fills a gap so the staff shows rests rather than blank space.
 // ponytail: only the first voice is filled; extra voices are sparse by nature
 // and a full rest chain in each would clutter the staff.
-func restItems(duration uint32, voice int) []xmlMeasureItem {
+func restItems(start, duration uint32, voice int, grid beatGrid) []xmlMeasureItem {
 	if voice != 1 {
 		return []xmlMeasureItem{{Forward: &xmlMove{Duration: duration}}}
 	}
 	var items []xmlMeasureItem
 	for duration > 0 {
-		part := notatable(duration)
-		items = append(items, xmlMeasureItem{Note: &xmlNote{
-			Rest: &xmlRest{}, Duration: part, Voice: voice,
-		}})
+		part := duration
+		// Rests obey the same tuplet edges as notes, or the beat would not add
+		// up to three of anything.
+		beatStart, inTriplet := grid.at(start)
+		switch next, ok := grid.nextTriplet(start, start+duration); {
+		case inTriplet:
+			part = min(part, beatStart+grid.beat-start)
+		case ok:
+			part = min(part, next-start)
+		}
+		if !inTriplet {
+			part = notatable(part)
+		}
+		rest := &xmlNote{Rest: &xmlRest{}, Duration: part, Voice: voice}
+		markTuplet(rest, grid, start, false)
+		items = append(items, xmlMeasureItem{Note: rest})
+		start += part
 		duration -= part
 	}
 	return items
+}
+
+// markTuplet notates one element of a triplet beat: three of them stand in for
+// two of the printed value. The tuplet bracket opens on the first element of
+// the beat and closes on the last, and a chord note carries only the scaling.
+func markTuplet(note *xmlNote, grid beatGrid, start uint32, chord bool) {
+	beatStart, ok := grid.at(start)
+	if !ok || note.Duration == 0 {
+		return
+	}
+	slot := grid.beat / 3
+	note.Type = noteTypeName(note.Duration / slot * (grid.beat / 2))
+	note.TimeModification = &xmlTimeModification{Actual: 3, Normal: 2}
+	if chord {
+		return
+	}
+	var tuplets []xmlTuplet
+	if start == beatStart {
+		tuplets = append(tuplets, xmlTuplet{Type: "start"})
+	}
+	if start+note.Duration == beatStart+grid.beat {
+		tuplets = append(tuplets, xmlTuplet{Type: "stop"})
+	}
+	if len(tuplets) == 0 {
+		return
+	}
+	if note.Notations == nil {
+		note.Notations = &xmlNotations{}
+	}
+	note.Notations.Tuplets = append(note.Notations.Tuplets, tuplets...)
+}
+
+// noteTypeName is the printed note value of a duration, empty when no single
+// value matches.
+func noteTypeName(duration uint32) string {
+	names := [...]string{"whole", "half", "quarter", "eighth", "16th", "32nd", "64th"}
+	value := ticksPerQuarter * 4
+	for _, name := range names {
+		if value == duration {
+			return name
+		}
+		value /= 2
+	}
+	return ""
 }
 
 // assignVoices spreads overlapping notes across voices. A MusicXML voice is
@@ -1197,16 +1383,32 @@ type xmlMove struct {
 // xmlNote is a note element. Chord is set on every note but the first of a
 // simultaneity.
 type xmlNote struct {
-	Chord     *struct{}     `xml:"chord,omitempty"`
-	Rest      *xmlRest      `xml:"rest,omitempty"`
-	Pitch     *xmlPitch     `xml:"pitch,omitempty"`
-	Duration  uint32        `xml:"duration"`
-	Ties      []xmlTie      `xml:"tie,omitempty"`
-	Voice     int           `xml:"voice"`
+	Chord    *struct{} `xml:"chord,omitempty"`
+	Rest     *xmlRest  `xml:"rest,omitempty"`
+	Pitch    *xmlPitch `xml:"pitch,omitempty"`
+	Duration uint32    `xml:"duration"`
+	Ties     []xmlTie  `xml:"tie,omitempty"`
+	Voice    int       `xml:"voice"`
+	Type     string    `xml:"type,omitempty"`
+
+	TimeModification *xmlTimeModification `xml:"time-modification,omitempty"`
+
 	Stem      string        `xml:"stem,omitempty"`
 	Notehead  string        `xml:"notehead,omitempty"`
 	Notations *xmlNotations `xml:"notations,omitempty"`
 	Lyrics    []xmlLyric    `xml:"lyric,omitempty"`
+}
+
+// xmlTimeModification scales a tuplet's real duration against its printed
+// note value.
+type xmlTimeModification struct {
+	Actual int `xml:"actual-notes"`
+	Normal int `xml:"normal-notes"`
+}
+
+// xmlTuplet is a tuplet bracket endpoint.
+type xmlTuplet struct {
+	Type string `xml:"type,attr"`
 }
 
 // xmlRest is a rest element. Measure is "yes" for a whole-measure rest.
@@ -1232,6 +1434,7 @@ type xmlNotations struct {
 	Slurs         []xmlSlur         `xml:"slur,omitempty"`
 	Fermatas      []xmlFermata      `xml:"fermata,omitempty"`
 	Arpeggiates   []xmlArpeggiate   `xml:"arpeggiate,omitempty"`
+	Tuplets       []xmlTuplet       `xml:"tuplet,omitempty"`
 	Articulations *xmlArticulations `xml:"articulations,omitempty"`
 	Ornaments     *xmlOrnaments     `xml:"ornaments,omitempty"`
 }
@@ -1240,7 +1443,8 @@ type xmlNotations struct {
 // left out rather than written as an empty tag on every plain note.
 func (n xmlNotations) empty() bool {
 	return len(n.Tied) == 0 && len(n.Slurs) == 0 && len(n.Fermatas) == 0 &&
-		len(n.Arpeggiates) == 0 && n.Articulations == nil && n.Ornaments == nil
+		len(n.Arpeggiates) == 0 && len(n.Tuplets) == 0 &&
+		n.Articulations == nil && n.Ornaments == nil
 }
 
 // xmlSlur is a slur endpoint.

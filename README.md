@@ -43,7 +43,8 @@ recorded notes is written as a chord chart, one rhythm slash per beat; pass
 Timing is snapped to a notation grid — `-quantize`, a 1/16 note by default,
 refined automatically where notes crowd closer than that — and durations are
 split into tied notatable values, so raw performance data (a Melodyne
-transcription, say) still produces a readable score. Notes that overlap within a part
+transcription, say) still produces a readable score. A beat whose notes fit
+thirds of a beat better than the straight grid is written as a triplet. Notes that overlap within a part
 are spread across voices, and silence in the first voice is written out as
 rests.
 Active MIDI-region placement, right-edge cropping, and loops are reconstructed;
