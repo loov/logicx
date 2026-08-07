@@ -37,7 +37,9 @@ beat grouping; markers become bold system text and end the preceding bar with a
 double barline. They are deliberately not rehearsal marks, which notation
 programs renumber into their own A, B, C sequence and so lose the section name. Region chords stay on their owning sequence; decoded project
 chords get a `Project Chords` staff unless an existing staff already contains
-them, and chords use semantic MusicXML harmony elements. Chord symbols land on
+them, and chords use semantic MusicXML harmony elements. Staff notes are
+spelled from the key signature, or from the chord track where the key signature
+is the C major Logic starts out with. Chord symbols land on
 their own grid, `-quantize-chords`, a quarter note by default, since a chord
 change belongs on the beat however loosely it was played. A staff with no
 recorded notes is written as a chord chart, one rhythm slash per beat; pass

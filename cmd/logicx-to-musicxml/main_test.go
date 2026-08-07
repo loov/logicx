@@ -573,3 +573,77 @@ func TestPrintedTempo_RoundsForTheStaffOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectSpelling_TakesItsSideFromTheKeyThenTheChords(t *testing.T) {
+	const (
+		flat    = uint8(1)
+		natural = uint8(2)
+		sharp   = uint8(3)
+	)
+	tests := []struct {
+		name    string
+		project logicx.ProjectData
+		class   uint8
+		want    uint8
+	}{{
+		name:    "sharp key spells black keys sharp",
+		project: logicx.ProjectData{KeySignatures: []logicx.KeySignatureChange{{Fifths: 3, Minor: true}}},
+		class:   10, want: sharp, // A#, not Bb
+	}, {
+		name:    "flat key spells black keys flat",
+		project: logicx.ProjectData{KeySignatures: []logicx.KeySignatureChange{{Fifths: -2}}},
+		class:   10, want: flat,
+	}, {
+		// Logic starts every project in C major, so an untouched key signature
+		// says nothing and the chord track has to.
+		name: "chords decide when the key is untouched",
+		project: logicx.ProjectData{
+			KeySignatures: []logicx.KeySignatureChange{{Fifths: 0}},
+			ProjectChords: []logicx.Chord{
+				{Name: "Bb", RootPitchClass: 10, RootSpelling: flat},
+				{Name: "Gm", RootPitchClass: 7, RootSpelling: natural},
+			},
+		},
+		class: 10, want: flat,
+	}, {
+		name: "a chord names its own pitch class against the side",
+		project: logicx.ProjectData{
+			ProjectChords: []logicx.Chord{
+				{Name: "Bb", RootPitchClass: 10, RootSpelling: flat},
+				{Name: "F#", RootPitchClass: 6, RootSpelling: sharp},
+			},
+		},
+		class: 6, want: sharp,
+	}, {
+		name:    "white keys stay natural",
+		project: logicx.ProjectData{KeySignatures: []logicx.KeySignatureChange{{Fifths: -4}}},
+		class:   4, want: natural,
+	}}
+	for _, test := range tests {
+		if got := projectSpelling(test.project)[test.class]; got != test.want {
+			t.Errorf("%s: class %d spells %d, want %d", test.name, test.class, got, test.want)
+		}
+	}
+}
+
+func TestWriteMusicXML_StaffNotesFollowTheProjectSpelling(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{
+			Sequences: []logicx.MIDISequence{{Name: "Lead", Notes: []logicx.MIDINote{
+				{Position: logicBarOneTick, Pitch: 70, Duration: 3_840}, // A#/Bb
+			}}},
+			ProjectChords: []logicx.Chord{{
+				Position: logicBarOneTick, Duration: 3_840, Name: "Bb",
+				RootPitchClass: 10, RootSpelling: 1, Pitches: []uint8{70, 74, 77},
+			}},
+		},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative, options{quantize: ticksPerQuarter / 4}); err != nil {
+		t.Fatal(err)
+	}
+	if xml := output.String(); !strings.Contains(xml, "<step>B</step>") || strings.Contains(xml, "<step>A</step>") {
+		t.Errorf("staff note is not spelled Bb:\n%s", xml)
+	}
+}

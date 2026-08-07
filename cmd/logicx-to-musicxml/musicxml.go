@@ -56,6 +56,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) er
 			id, sequence.MIDISequence, sequence.slash,
 			alternative.Project.Markers, i == 0, tempos, alternative.Project.TimeSignatures,
 			alternative.Project.KeySignatures, alternative.Metadata, origin, opts.quantize,
+			projectSpelling(alternative.Project),
 		))
 	}
 
@@ -501,6 +502,8 @@ func slashNotes(chords []logicx.Chord, measures *measureMap) []logicx.MIDINote {
 type noteSegment struct {
 	Start, Duration    uint32
 	Pitch              uint8
+	Step               string
+	Alter              *int
 	Lyrics             []logicx.Lyric
 	ScoreArticulations []logicx.ScoreArticulation
 	ScoreFermatas      []logicx.ScoreFermata
@@ -616,6 +619,7 @@ func makePart(
 	metadata logicx.Metadata,
 	origin uint32,
 	quantizeGrid uint32,
+	spelling pitchSpelling,
 ) xmlPart {
 	measures := newMeasureMap(origin, metadata, timeSignatures)
 	triplets := findTripletBeats(sequence.Notes, measures, quantizeGrid)
@@ -652,8 +656,10 @@ func makePart(
 			if !inTriplet {
 				duration = notatable(duration)
 			}
+			step, alter, _ := harmonyPitch(note.Pitch%12, spelling[note.Pitch%12])
 			byMeasure[measure] = append(byMeasure[measure], noteSegment{
 				Start: within, Duration: duration, Pitch: note.Pitch,
+				Step: step, Alter: alter,
 				Lyrics:             note.Lyrics,
 				ScoreArticulations: note.ScoreArticulations,
 				ScoreFermatas:      note.ScoreFermatas,
@@ -923,6 +929,84 @@ func harmonyPitch(pitch, spelling uint8) (step string, alter *int, name string) 
 	return step, &value, name
 }
 
+// pitchSpelling holds one Logic spelling code per pitch class, saying how a
+// staff writes each of the twelve notes.
+type pitchSpelling [12]uint8
+
+// blackKey reports whether a pitch class has to be written with an accidental.
+func blackKey(class int) bool {
+	return class == 1 || class == 3 || class == 6 || class == 8 || class == 10
+}
+
+// projectSpelling decides how to write each pitch class. Logic stores a MIDI
+// pitch and nothing about how it was notated, so the spelling has to be
+// recovered: the key signature says whether the black keys are sharps or flats,
+// and where it is the C major Logic starts out with, the chord track says
+// instead. A chord root or bass then names its own pitch class outright, so an
+// F# chord keeps its sharp in a flat-sided piece.
+func projectSpelling(project logicx.ProjectData) pitchSpelling {
+	chords := slices.Clone(project.ProjectChords)
+	for _, sequence := range project.Sequences {
+		chords = append(chords, sequence.Chords...)
+	}
+
+	fifths := 0
+	for _, signature := range project.KeySignatures {
+		if signature.Fifths != 0 {
+			fifths = int(signature.Fifths)
+			break
+		}
+	}
+	if fifths == 0 {
+		var flats, sharps int
+		for _, chord := range chords {
+			switch chord.RootSpelling {
+			case 1:
+				flats++
+			case 3:
+				sharps++
+			}
+		}
+		if flats > sharps {
+			fifths = -1
+		}
+	}
+
+	black := uint8(3) // sharp
+	if fifths < 0 {
+		black = 1 // flat
+	}
+	var spelling pitchSpelling
+	for class := range spelling {
+		spelling[class] = 2 // natural
+		if blackKey(class) {
+			spelling[class] = black
+		}
+	}
+
+	// A chord names the black keys it uses; ties keep the key's side.
+	var votes [12][5]int
+	for _, chord := range chords {
+		for _, named := range [...]struct{ class, code uint8 }{
+			{chord.RootPitchClass, chord.RootSpelling},
+			{chord.BassPitchClass, chord.BassSpelling},
+		} {
+			if blackKey(int(named.class%12)) && (named.code == 1 || named.code == 3) {
+				votes[named.class%12][named.code]++
+			}
+		}
+	}
+	for class, tally := range votes {
+		switch {
+		case tally[1] > tally[3]:
+			spelling[class] = 1
+		case tally[3] > tally[1]:
+			spelling[class] = 3
+		}
+	}
+	return spelling
+}
+
 // sharpPitchClass names a pitch class using sharps, for pitches that carry no
 // usable spelling of their own.
 func sharpPitchClass(pitch uint8) (step string, alter *int, name string) {
@@ -1122,10 +1206,10 @@ func assignVoices(notes []noteSegment) {
 // makeXMLNote renders one segment, attaching its ties, notations and lyrics.
 func makeXMLNote(segment noteSegment, chord bool) *xmlNote {
 	// TODO(logicx): Does the chord record preserve spelling for every tone?
-	// Synthesized staff notes currently choose sharps from MIDI pitch alone.
-	step, alter, _ := sharpPitchClass(segment.Pitch)
+	// A chord staff spells its tones from the project's pitch classes, not from
+	// the voicing Logic recorded.
 	note := &xmlNote{
-		Pitch:    &xmlPitch{Step: step, Alter: alter, Octave: int(segment.Pitch)/12 - 1},
+		Pitch:    &xmlPitch{Step: segment.Step, Alter: segment.Alter, Octave: int(segment.Pitch)/12 - 1},
 		Duration: segment.Duration, Voice: max(segment.Voice, 1),
 	}
 	if chord {
