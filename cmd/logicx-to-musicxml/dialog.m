@@ -146,9 +146,10 @@ static void exportProject(NSString *path) {
 }
 
 // Droplet exports the projects dropped on the app icon, and asks for one when
-// the app is opened by itself.
+// the app is opened by itself or picked from the Services menu.
 @interface Droplet : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *dropped;
+@property(nonatomic) BOOL working;
 @end
 
 @implementation Droplet
@@ -161,7 +162,23 @@ static void exportProject(NSString *path) {
 	[app replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
 }
 
+// exportProject:userData:error: is the Services menu item. It takes no input,
+// so it does what a plain launch does; the guard is for the launch and the
+// service message arriving for the same run.
+- (void)exportProject:(NSPasteboard *)pasteboard userData:(NSString *)data error:(NSString **)error {
+	[self run];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
+	[self run];
+}
+
+- (void)run {
+	if (self.working) {
+		return;
+	}
+	self.working = YES;
+
 	if (self.dropped.count > 0) {
 		for (NSString *path in self.dropped) {
 			exportProject(path);
@@ -184,7 +201,9 @@ static void exportProject(NSString *path) {
 void RunDroplet(void) {
 	@autoreleasepool {
 		startApp();
-		[NSApp setDelegate:[[Droplet alloc] init]];
+		Droplet *droplet = [[Droplet alloc] init];
+		[NSApp setDelegate:droplet];
+		[NSApp setServicesProvider:droplet];
 		[NSApp run];
 	}
 }

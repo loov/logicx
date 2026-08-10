@@ -67,10 +67,12 @@ available in raw chunks but are not decoded yet.
 ```
 
 builds **Export to MusicXML.app** into `~/Applications` (override with
-`APP_DIR`), links the command into `$HOME/bin` (`BIN_DIR`), and registers a
-Quick Action in `~/Library/Services`, which is how Logic Pro gets a menu item:
-Logic's Scripter plug-in cannot launch programs, but every app's **Services**
-menu can. Uninstall by deleting those three paths.
+`APP_DIR`) and links the command into `$HOME/bin` (`BIN_DIR`). Uninstall by
+deleting those two paths.
+
+The app declares itself as a **Services** menu item, which is how Logic Pro
+gets one: Logic's Scripter plug-in cannot launch programs, but every app's
+Services menu can.
 
 Save the Logic project first, then either drop it on the app, open it with the
 app, or choose **Logic Pro > Services > Export to MusicXML** and pick it. A
@@ -83,8 +85,32 @@ Services** if you want one.
 
 The app is the same binary as the command — with arguments it is a command,
 without them it is the app — and the dialog is AppKit called directly through
-cgo. It is unsigned, which is fine for a locally built app; a copy downloaded
-from elsewhere would need `xattr -d com.apple.quarantine` or a signature.
+cgo.
+
+## Release a disk image
+
+`install.sh` builds for this machine and does not sign, which is all a local
+build needs. To hand the app to someone else:
+
+```sh
+VERSION=1.0 ./release.sh
+```
+
+builds a universal (arm64 and x86_64) app, signs it with the hardened runtime,
+packs it into a drag-to-Applications disk image, notarizes it, and staples the
+ticket, leaving `build/ExportToMusicXML-1.0.dmg`. It needs a **Developer ID
+Application** certificate from the paid Apple Developer Program, and
+notarization credentials stored once:
+
+```sh
+xcrun notarytool store-credentials logicx-notary \
+    --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+```
+
+`SIGN_IDENTITY`, `NOTARY_PROFILE` and `OUT_DIR` override the defaults;
+`SIGN_IDENTITY=-` signs ad-hoc and skips notarization, for checking the image
+builds without a certificate. A disk image that is signed but not notarized is
+refused by Gatekeeper on any Mac but the one that built it.
 
 The binary format is undocumented and may change between Logic versions.
 Keep backups of irreplaceable projects. This package never writes to a bundle.
