@@ -29,8 +29,9 @@ const (
 // options are the export choices the command line offers.
 type options struct {
 	realizeChords bool
-	quantize      uint32 // coarsest notation grid, in ticks
-	quantizeChord uint32 // grid chord symbols land on, in ticks
+	quantize      uint32 // coarsest notation grid, in ticks; zero leaves timing alone
+	quantizeChord uint32 // grid chord symbols land on, in ticks; zero leaves them alone
+	noTriplets    bool   // write thirds of a beat on the straight grid instead
 }
 
 // writeMusicXML renders one project alternative as a MusicXML 4.0 partwise
@@ -55,7 +56,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) er
 		score.Parts = append(score.Parts, makePart(
 			id, sequence.MIDISequence, sequence.slash,
 			alternative.Project.Markers, i == 0, tempos, alternative.Project.TimeSignatures,
-			alternative.Project.KeySignatures, alternative.Metadata, origin, opts.quantize,
+			alternative.Project.KeySignatures, alternative.Metadata, origin, opts,
 			projectSpelling(alternative.Project),
 		))
 	}
@@ -618,12 +619,20 @@ func makePart(
 	keySignatures []logicx.KeySignatureChange,
 	metadata logicx.Metadata,
 	origin uint32,
-	quantizeGrid uint32,
+	opts options,
 	spelling pitchSpelling,
 ) xmlPart {
 	measures := newMeasureMap(origin, metadata, timeSignatures)
-	triplets := findTripletBeats(sequence.Notes, measures, quantizeGrid)
-	notes := quantizeNotes(sequence.Notes, quantizeGrid, triplets)
+	// Triplets are found by how far the onsets sit off the straight grid, so
+	// there is nothing to find, and nothing to snap them to, without one.
+	var triplets beatGrid
+	notes := sequence.Notes
+	if opts.quantize != 0 {
+		if !opts.noTriplets {
+			triplets = findTripletBeats(sequence.Notes, measures, opts.quantize)
+		}
+		notes = quantizeNotes(sequence.Notes, opts.quantize, triplets)
+	}
 	if slash {
 		notes, triplets = slashNotes(sequence.Chords, measures), beatGrid{}
 	}

@@ -462,6 +462,75 @@ func TestQuantizeNotes_RefinesTheGridForFastRuns(t *testing.T) {
 	}
 }
 
+// TestWriteMusicXML_QuantizationAndTripletsOff checks the two switches that
+// hand the raw performance through: no grid, and no tuplets.
+func TestWriteMusicXML_QuantizationAndTripletsOff(t *testing.T) {
+	alternative := tripletAlternative()
+	loosest := alternative.Project.Sequences[0].Notes[1].Position
+
+	for _, test := range []struct {
+		name    string
+		options options
+		tuplets bool
+		onset   uint32 // where the second note starts, in ticks from bar one
+	}{
+		{name: "quantized", options: options{quantize: ticksPerQuarter / 4}, tuplets: true, onset: 320},
+		{name: "no triplets", options: options{quantize: ticksPerQuarter / 4, noTriplets: true}, onset: 240},
+		{name: "no quantization", options: options{}, onset: loosest - logicBarOneTick},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := writeMusicXML(&output, alternative, test.options); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(output.String(), "<tuplet"); got != test.tuplets {
+				t.Errorf("tuplets in score = %v, want %v", got, test.tuplets)
+			}
+			// Durations up to the second note say where it was placed.
+			var score struct {
+				Parts []struct {
+					Measures []struct {
+						Notes []struct {
+							Duration uint32    `xml:"duration"`
+							Rest     *struct{} `xml:"rest"`
+						} `xml:"note"`
+					} `xml:"measure"`
+				} `xml:"part"`
+			}
+			if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+				t.Fatal(err)
+			}
+			var onset uint32
+			for _, note := range score.Parts[0].Measures[0].Notes {
+				if onset >= test.onset {
+					break
+				}
+				onset += note.Duration
+			}
+			if onset != test.onset {
+				t.Errorf("the second note starts at %d ticks, want %d", onset, test.onset)
+			}
+		})
+	}
+}
+
+// tripletAlternative is bar 1 beat 1: three eighth-note triplets, played a
+// little loose. Beat 2: two straight eighths. The rest of the bar is silent.
+func tripletAlternative() logicx.Alternative {
+	return logicx.Alternative{
+		Metadata: logicx.Metadata{TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{Sequences: []logicx.MIDISequence{{
+			Name: "Lead", Notes: []logicx.MIDINote{
+				{Position: logicBarOneTick + 3, Pitch: 60, Duration: 310},
+				{Position: logicBarOneTick + 327, Pitch: 62, Duration: 300},
+				{Position: logicBarOneTick + 634, Pitch: 64, Duration: 320},
+				{Position: logicBarOneTick + 960, Pitch: 65, Duration: 480},
+				{Position: logicBarOneTick + 1_440, Pitch: 67, Duration: 480},
+			},
+		}}},
+	}
+}
+
 func TestWriteMusicXML_TripletBeatsNotateAsTuplets(t *testing.T) {
 	// Bar 1 beat 1: three eighth-note triplets, played a little loose. Beat 2:
 	// two straight eighths. The rest of the bar is silent.

@@ -48,7 +48,11 @@ Timing is snapped to a notation grid — `-quantize`, a 1/16 note by default,
 refined automatically where notes crowd closer than that — and durations are
 split into tied notatable values, so raw performance data (a Melodyne
 transcription, say) still produces a readable score. A beat whose notes fit
-thirds of a beat better than the straight grid is written as a triplet. Notes that overlap within a part
+thirds of a beat better than the straight grid is written as a triplet, unless
+`-triplets=false` says to keep the straight grid. Either grid can be turned
+off with `-quantize off` or `-quantize-chords off`, which writes what Logic
+recorded, tick for tick; triplet detection goes with it, since it measures how
+far the onsets sit off the grid there is no longer. Notes that overlap within a part
 are spread across voices, and silence in the first voice is written out as
 rests.
 Active MIDI-region placement, right-edge cropping, and loops are reconstructed;
@@ -56,40 +60,31 @@ looped notes, region chords, tempo curves, lyrics, and score articulations are
 expanded in the exported score. Performance articulation-ID assignments remain
 available in raw chunks but are not decoded yet.
 
-## Run the exporter from Logic Pro
-
-Logic Pro's Scripter plug-in cannot launch external programs, but a macOS
-Automator Quick Action can run the exporter from Logic's Services menu or a
-keyboard shortcut.
-
-First, build the command from this repository:
+## The Export to MusicXML app
 
 ```sh
-mkdir -p "$HOME/bin"
-go build -o "$HOME/bin/logicx-to-musicxml" ./cmd/logicx-to-musicxml
+./install.sh
 ```
 
-Then create the Quick Action:
+builds **Export to MusicXML.app** into `~/Applications` (override with
+`APP_DIR`), links the command into `$HOME/bin` (`BIN_DIR`), and registers a
+Quick Action in `~/Library/Services`, which is how Logic Pro gets a menu item:
+Logic's Scripter plug-in cannot launch programs, but every app's **Services**
+menu can. Uninstall by deleting those three paths.
 
-1. Open Automator and choose **Quick Action**.
-2. Set **Workflow receives current** to **no input** in **any application**.
-3. Add **Run Shell Script**, choose `/bin/zsh`, and paste:
+Save the Logic project first, then either drop it on the app, open it with the
+app, or choose **Logic Pro > Services > Export to MusicXML** and pick it. A
+dialog offers the two quantization grids (**off** included), triplet
+detection, the chord and MIDI options, and the project alternative when there
+is more than one; **Export…** asks where to
+save, writes the files, and reveals them in Finder. Give the Quick Action a
+keyboard shortcut in **System Settings > Keyboard > Keyboard Shortcuts >
+Services** if you want one.
 
-   ```sh
-   project=$(/usr/bin/osascript -e 'POSIX path of (choose file with prompt "Choose a saved Logic Pro project")') || exit 0
-   project=${project%/}
-   output=${project%.logicx}.musicxml
-   "$HOME/bin/logicx-to-musicxml" -o "$output" "$project" &&
-       /usr/bin/open -R "$output"
-   ```
-
-4. Save the action as **Export Logic Project to MusicXML**.
-5. In **System Settings > Keyboard > Keyboard Shortcuts > Services**, enable
-   the action and optionally assign it a shortcut.
-
-Save the Logic project before running the action. Invoke it from **Logic Pro >
-Services** or with the assigned shortcut, choose the `.logicx` project, and the
-exporter writes a `.musicxml` file next to it and reveals it in Finder.
+The app is the same binary as the command — with arguments it is a command,
+without them it is the app — and the dialog is AppKit called directly through
+cgo. It is unsigned, which is fine for a locally built app; a copy downloaded
+from elsewhere would need `xattr -d com.apple.quarantine` or a signature.
 
 The binary format is undocumented and may change between Logic versions.
 Keep backups of irreplaceable projects. This package never writes to a bundle.
