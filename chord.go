@@ -219,7 +219,7 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 	if chord.Scale {
 		pitchMask = chord.ScaleMask
 	}
-	for interval := uint8(0); interval < 12; interval++ {
+	for interval := range uint8(12) {
 		if pitchMask&(1<<interval) != 0 {
 			chord.Pitches = append(chord.Pitches, 60+chord.RootPitchClass+interval)
 		}

@@ -610,10 +610,7 @@ func attachScoreSlurs(notes []MIDINote, segments []scoreSlurSegment) {
 		}
 		startEnd := nextNotePosition(notes, start)
 		stopEnd := nextNotePosition(notes, end)
-		count := min(startEnd-start, stopEnd-end)
-		if count > 255 {
-			count = 255
-		}
+		count := min(startEnd-start, stopEnd-end, 255)
 		for i := range count {
 			number := uint8(i + 1)
 			notes[start+i].ScoreSlurs = append(notes[start+i].ScoreSlurs, ScoreSlur{
