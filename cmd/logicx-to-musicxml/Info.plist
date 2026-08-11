@@ -7,7 +7,7 @@
 	<key>CFBundleIconFile</key>
 	<string>icon</string>
 	<key>CFBundleIdentifier</key>
-	<string>net.egonelbre.logicx.export</string>
+	<string>com.egonelbre.musicxml-bridge-for-logicx</string>
 	<key>CFBundleName</key>
 	<string>MusicXML Bridge</string>
 	<key>CFBundleDisplayName</key>
