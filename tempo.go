@@ -6,7 +6,7 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/egonelbre/logicx/internal/record"
+	"github.com/loov/logicx/internal/record"
 )
 
 // TempoChange is a sampled tempo-map value. Logic stores ramps as tempo

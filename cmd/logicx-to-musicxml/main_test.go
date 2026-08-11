@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egonelbre/logicx"
+	"github.com/loov/logicx"
 )
 
 func TestWriteMusicXML(t *testing.T) {

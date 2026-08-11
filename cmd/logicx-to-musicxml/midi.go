@@ -10,7 +10,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/egonelbre/logicx"
+	"github.com/loov/logicx"
 )
 
 // midiVelocity is the velocity every exported note carries. Logic's note

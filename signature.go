@@ -7,7 +7,7 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/egonelbre/logicx/internal/record"
+	"github.com/loov/logicx/internal/record"
 )
 
 // projectStartTick is the tick position of bar 1. Logic writes signature

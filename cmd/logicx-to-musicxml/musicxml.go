@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/egonelbre/logicx"
+	"github.com/loov/logicx"
 )
 
 const (

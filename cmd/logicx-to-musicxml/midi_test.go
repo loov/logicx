@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/egonelbre/logicx"
+	"github.com/loov/logicx"
 )
 
 func TestWriteMIDI_KeepsLogicTimingUnquantized(t *testing.T) {

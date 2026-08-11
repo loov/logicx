@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/egonelbre/logicx"
+	"github.com/loov/logicx"
 )
 
 // main reads a bundle and writes the score to stdout or -o.
@@ -38,7 +38,7 @@ func main() {
 	quantizeChords := flag.String("quantize-chords", "1/4", "note value to snap chord symbols to (1/1 to 1/64, or off)")
 	triplets := flag.Bool("triplets", true, "notate beats played in thirds as triplets")
 	midi := flag.Bool("midi", false, "also write the unquantized note data beside -o as a Standard MIDI File")
-	ui := flag.Bool("ui", false, "show an export dialog in the browser instead of exporting directly")
+	ui := flag.Bool("ui", false, "ask for the export settings in a dialog instead of exporting directly")
 	flag.Parse()
 	if flag.NArg() > 1 || (flag.NArg() == 0 && !*ui) {
 		fmt.Fprintln(os.Stderr, "usage: logicx-to-musicxml [-o score.musicxml] [-alternative 000] [-quantize 1/16] [-quantize-chords 1/4] [-triplets=false] [-realize-chords] [-midi] [-ui] project.logicx")

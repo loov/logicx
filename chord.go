@@ -7,7 +7,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/egonelbre/logicx/internal/record"
+	"github.com/loov/logicx/internal/record"
 )
 
 // Chord is a timed harmony recovered from a region or the project chord lane.

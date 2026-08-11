@@ -1,4 +1,4 @@
-module github.com/egonelbre/logicx
+module github.com/loov/logicx
 
 go 1.22
 

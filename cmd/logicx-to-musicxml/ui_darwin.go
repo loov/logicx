@@ -16,7 +16,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/egonelbre/logicx"
+	"github.com/loov/logicx"
 )
 
 // AppKit only talks to the main thread, and the Go runtime only guarantees

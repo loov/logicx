@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/egonelbre/logicx/internal/record"
+	"github.com/loov/logicx/internal/record"
 )
 
 // MIDISequence is an active MIDI region discovered in ProjectData. Position
