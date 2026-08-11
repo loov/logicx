@@ -13,6 +13,10 @@
 #   xcrun notarytool store-credentials logicx-notary \
 #       --apple-id you@example.com --team-id TEAMID --password <app-specific>
 #
+# On a build machine, where no one can type a keychain password, set
+# NOTARY_KEY to an App Store Connect API key file instead, with NOTARY_KEY_ID
+# and NOTARY_ISSUER_ID beside it.
+#
 # SIGN_IDENTITY, NOTARY_PROFILE, VERSION and OUT_DIR override the defaults.
 # Without a notary profile it still signs and builds the image, which is fine
 # for a local check but not for anyone else's Mac.
@@ -52,14 +56,20 @@ if [[ $identity == "-" ]]; then
 	echo "$dmg (ad-hoc signed, for local checks only)"
 	exit 0
 fi
-if ! xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1; then
+# A stored profile is the convenient way by hand; an App Store Connect API key
+# is the one a build machine can hold, so NOTARY_KEY wins where it is set.
+credentials=(--keychain-profile "$profile")
+if [[ -n ${NOTARY_KEY:-} ]]; then
+	credentials=(--key "$NOTARY_KEY" --key-id "${NOTARY_KEY_ID:?NOTARY_KEY needs NOTARY_KEY_ID}"
+		--issuer "${NOTARY_ISSUER_ID:?NOTARY_KEY needs NOTARY_ISSUER_ID}")
+elif ! xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1; then
 	echo "$dmg (signed but NOT notarized: no \"$profile\" credentials)" >&2
 	echo "Gatekeeper will refuse it on another Mac; see the comment at the top of $0" >&2
 	exit 1
 fi
 
 # Notarizing the image covers the app inside it, so one staple is enough.
-xcrun notarytool submit "$dmg" --keychain-profile "$profile" --wait
+xcrun notarytool submit "$dmg" "${credentials[@]}" --wait
 xcrun stapler staple "$dmg"
 spctl --assess --type open --context context:primary-signature -v "$dmg"
 

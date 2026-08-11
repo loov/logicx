@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds the signed, notarized disk image for a version tag and attaches it to
+# the GitHub release. It needs these repository secrets:
+#
+#   SIGNING_CERTIFICATE    base64 of the Developer ID Application .p12
+#                          (`base64 -i cert.p12 | pbcopy`)
+#   SIGNING_PASSWORD       the password the .p12 was exported with
+#   NOTARY_KEY             base64 of the App Store Connect API key .p8
+#   NOTARY_KEY_ID          the key ID that came with it
+#   NOTARY_ISSUER_ID       the issuer ID from App Store Connect > Integrations
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # A keychain of its own, unlocked for this job only, so the certificate
+      # never lands in the runner's login keychain.
+      - name: Import the Developer ID certificate
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.SIGNING_CERTIFICATE }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          set -eu
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$SIGNING_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Build, sign and notarize
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          NOTARY_KEY="$RUNNER_TEMP/notary.p8" VERSION="${TAG#v}" ./release.sh
+          rm "$RUNNER_TEMP/notary.p8"
+
+      - name: Attach the disk image to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          gh release create "$TAG" --generate-notes build/*.dmg ||
+            gh release upload "$TAG" build/*.dmg --clobber
