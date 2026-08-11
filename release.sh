@@ -35,6 +35,8 @@ dmg="$out/MusicXMLBridge-$version.dmg"
 
 if [[ $identity != "-" ]] && ! security find-identity -v -p codesigning | grep -q "$identity"; then
 	echo "no \"$identity\" certificate in the keychain; see the comment at the top of $0" >&2
+	echo "what is there:" >&2
+	security find-identity -v -p codesigning >&2
 	exit 1
 fi
 

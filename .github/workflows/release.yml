@@ -57,6 +57,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
           security list-keychain -d user -s "$keychain" login.keychain-db
           rm "$RUNNER_TEMP/certificate.p12"
+          # A .p12 exported without its private key imports without complaint
+          # and signs nothing, so say what actually arrived.
+          security find-identity -v -p codesigning "$keychain"
 
       - name: Build, sign and notarize
         env:
