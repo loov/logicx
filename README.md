@@ -31,8 +31,8 @@ A dialog offers the quantization grids, triplet detection, the chord and MIDI
 options, and the project alternative when there is more than one. **Export…**
 asks where to save, writes the files, and reveals them in Finder.
 
-The app is the same binary as the command — with arguments it is a command,
-without them it is the app — and its dialog is AppKit through cgo.
+The app is the same binary as the command: with arguments it is a command,
+without them it is the app.
 
 ## Command line
 
@@ -102,41 +102,11 @@ Audio Units, MIDI sequences, score articulations, markers, tempo maps and
 key/time signatures. `ParseProjectData` and `ParseMetadata` take bytes, for a
 boundary that touches no files.
 
-## Release a disk image
-
-`install.sh` builds for this machine and does not sign, which is all a local
-build needs. To hand the app to someone else:
-
-```sh
-VERSION=1.0 ./release.sh
-```
-
-builds a universal app, signs it with the hardened runtime, packs it into a
-drag-to-Applications image, notarizes it and staples the ticket, leaving
-`build/MusicXMLBridge-1.0.dmg`. It needs a **Developer ID Application**
-certificate from the paid Apple Developer Program, and notarization
-credentials stored once:
-
-```sh
-xcrun notarytool store-credentials logicx-notary \
-    --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
-```
-
-`SIGN_IDENTITY=-` signs ad-hoc and skips notarization, to check the image
-builds without a certificate; `SIGN_IDENTITY`, `NOTARY_PROFILE` and `OUT_DIR`
-override the rest. Gatekeeper refuses a signed but unnotarized image on every
-Mac but the one that built it.
-
-Pushing a `v*` tag runs the same script on GitHub and attaches the image to
-the release. That takes `SIGNING_CERTIFICATE` (base64 of a `.p12` export of
-the certificate *and its private key*) and `SIGNING_PASSWORD`, plus either an
-App Store Connect API key (`NOTARY_KEY`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`)
-or an Apple ID with an app-specific password (`NOTARY_APPLE_ID`,
-`NOTARY_TEAM_ID`, `NOTARY_PASSWORD`), which is the way in while a team waits
-on App Store Connect API access. The workflow comments say where each secret
-comes from.
-
 ---
+
+Building, releasing and how the app bundle is put together:
+[DEVELOPMENT.md](DEVELOPMENT.md). The vocabulary the score reconstruction uses:
+[CONTEXT.md](CONTEXT.md).
 
 Format knowledge is based on
 [`lpx-toolkit`](https://github.com/rhydlewis/lpx-toolkit) and
