@@ -7,6 +7,11 @@
 #include "dialog.h"
 #include "_cgo_export.h"
 
+// unsavedProject is set when the project came from Logic with changes it has
+// not written, which the export, reading the file, would miss. The dialog says
+// so rather than the export quietly being one save behind.
+static BOOL unsavedProject = NO;
+
 // gridValues are the note values both quantization controls offer, off being
 // the raw timing Logic recorded.
 static NSArray<NSString *> *gridValues(void) {
@@ -108,7 +113,11 @@ ExportChoice ShowExportDialog(const char *project, const char *destinationPath,
 
 		NSAlert *alert = [[NSAlert alloc] init];
 		alert.messageText = @"Export to MusicXML";
-		alert.informativeText = @(project);
+		alert.informativeText = unsavedProject
+			? [NSString stringWithFormat:@"%s\n\nLogic Pro has unsaved changes in this "
+				"project. The score is read from the file, so save it first to "
+				"export what you are hearing.", project]
+			: @(project);
 		alert.accessoryView = view;
 		[alert addButtonWithTitle:@"Export…"];
 		[alert addButtonWithTitle:@"Cancel"];
@@ -170,6 +179,44 @@ static void exportProject(NSString *path, BOOL offerMenuItem) {
 	[alert runModal];
 }
 
+// logicBundleID is Logic Pro, still numbered from Logic Pro X.
+static NSString *const logicBundleID = @"com.apple.logic10";
+
+// frontLogicProject is the project Logic Pro has open, so that the menu item
+// exports what the musician is looking at rather than asking which file it
+// was. Nil for every way that can fail — Logic not running, no project open,
+// no permission to ask, a project never saved — each of which lands the caller
+// back on the open panel. unsaved reports a project with changes Logic has not
+// written yet, which is what an export would miss.
+static NSString *frontLogicProject(BOOL *unsaved) {
+	*unsaved = NO;
+	if ([NSRunningApplication runningApplicationsWithBundleIdentifier:logicBundleID].count == 0) {
+		return nil;
+	}
+
+	NSString *source = [NSString stringWithFormat:
+		@"tell application id \"%@\"\n"
+		 "  if (count of documents) is 0 then return \"\"\n"
+		 "  set answer to path of document 1\n"
+		 "  if answer does not start with \"/\" then set answer to POSIX path of (answer as alias)\n"
+		 "  return answer & linefeed & (modified of document 1)\n"
+		 "end tell", logicBundleID];
+	NSDictionary *failure = nil;
+	NSAppleEventDescriptor *result =
+		[[[NSAppleScript alloc] initWithSource:source] executeAndReturnError:&failure];
+	if (result == nil) {
+		return nil;
+	}
+
+	NSArray<NSString *> *lines = [result.stringValue componentsSeparatedByString:@"\n"];
+	NSString *path = lines.firstObject;
+	if (path.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+		return nil;
+	}
+	*unsaved = lines.count > 1 && [lines[1] isEqualToString:@"true"];
+	return path;
+}
+
 // Droplet exports the projects dropped on the app icon, and asks for one when
 // the app is opened by itself or picked from the Services menu.
 @interface Droplet : NSObject <NSApplicationDelegate>
@@ -205,11 +252,14 @@ static void exportProject(NSString *path, BOOL offerMenuItem) {
 		return;
 	}
 	self.working = YES;
+	NSString *open;
 
 	if (self.dropped.count > 0) {
 		for (NSString *path in self.dropped) {
 			exportProject(path, NO);
 		}
+	} else if ((open = frontLogicProject(&unsavedProject)) != nil) {
+		exportProject(open, !self.fromMenu);
 	} else {
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
 		panel.message = @"Choose a saved Logic Pro project";

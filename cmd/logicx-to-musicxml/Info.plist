@@ -49,6 +49,8 @@
 			<array/>
 		</dict>
 	</array>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Asking Logic Pro which project is open saves you from picking the file yourself.</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>

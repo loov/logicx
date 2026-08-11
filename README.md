@@ -21,8 +21,11 @@ builds **MusicXML Bridge for Logic Pro.app** into `~/Applications` and links
 the command, `logicx-to-musicxml`, into `$HOME/bin`. `APP_DIR` and `BIN_DIR`
 override both; uninstalling is deleting them.
 
-Save the Logic project, then drop it on the app, open it with the app, or
-choose **Logic Pro > Services > Export to MusicXML** and pick it. The app
+Save the Logic project, then choose **Logic Pro > Services > Export to
+MusicXML**, which exports the project Logic has open — it asks Logic which one
+that is, so the first run wants permission to do so. Dropping a project on the
+app, or opening it with the app, works the same way, and with nothing to go on
+it asks for a project. The app
 provides that menu item itself: Logic's Scripter plug-in cannot launch
 programs, but every app's Services menu can. Opening the app by hand offers an
 **Add to Logic Pro Menu** button that registers it, and **System Settings >
@@ -30,7 +33,9 @@ Keyboard > Keyboard Shortcuts > Services** will give it a shortcut.
 
 A dialog offers the quantization grids, triplet detection, the chord and MIDI
 options, and the project alternative when there is more than one. **Export…**
-asks where to save, writes the files, and reveals them in Finder.
+asks where to save, writes the files, and reveals them in Finder. The score is
+read from the project file, so unsaved changes are not in it; the dialog says
+as much when Logic reports the project as modified.
 
 The app is the same binary as the command: with arguments it is a command,
 without them it is the app.
