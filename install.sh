@@ -8,8 +8,12 @@ set -eu
 
 cd "$(dirname "$0")"
 
-app="${APP_DIR:-$HOME/Applications}/Export to MusicXML.app"
+app="${APP_DIR:-$HOME/Applications}/MusicXML Bridge for Logic Pro.app"
 bin=${BIN_DIR:-$HOME/bin}
+
+# The app answered to another name before, and two copies would mean two
+# entries in the Services menu.
+rm -rf "${APP_DIR:-$HOME/Applications}/Export to MusicXML.app"
 
 ./build-app.sh "$app"
 mkdir -p "$bin"

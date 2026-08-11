@@ -9,7 +9,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>net.egonelbre.logicx.export</string>
 	<key>CFBundleName</key>
-	<string>Export to MusicXML</string>
+	<string>MusicXML Bridge</string>
+	<key>CFBundleDisplayName</key>
+	<string>MusicXML Bridge for Logic Pro</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -42,7 +44,7 @@
 			<key>NSMessage</key>
 			<string>exportProject</string>
 			<key>NSPortName</key>
-			<string>Export to MusicXML</string>
+			<string>MusicXML Bridge</string>
 			<key>NSSendTypes</key>
 			<array/>
 		</dict>

@@ -30,8 +30,8 @@ version=${VERSION:-1.0}
 identity=${SIGN_IDENTITY:-Developer ID Application}
 profile=${NOTARY_PROFILE:-logicx-notary}
 out=${OUT_DIR:-build}
-app="$out/Export to MusicXML.app"
-dmg="$out/ExportToMusicXML-$version.dmg"
+app="$out/MusicXML Bridge for Logic Pro.app"
+dmg="$out/MusicXMLBridge-$version.dmg"
 
 if [[ $identity != "-" ]] && ! security find-identity -v -p codesigning | grep -q "$identity"; then
 	echo "no \"$identity\" certificate in the keychain; see the comment at the top of $0" >&2
@@ -50,7 +50,7 @@ staging=$(mktemp -d)
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 rm -f "$dmg"
-hdiutil create -volname "Export to MusicXML" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
+hdiutil create -volname "MusicXML Bridge for Logic Pro" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
 rm -rf "$staging"
 codesign --force --timestamp --sign "$identity" "$dmg"
 

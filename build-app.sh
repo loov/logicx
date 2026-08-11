@@ -1,11 +1,11 @@
 #!/bin/zsh
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Assembles "Export to MusicXML.app" at the given path. ARCHS picks what goes
-# in the binary, this machine's architecture by default. VERSION overrides the
-# version in Info.plist.
+# Assembles "MusicXML Bridge for Logic Pro.app" at the given path. ARCHS picks
+# what goes in the binary, this machine's architecture by default. VERSION
+# overrides the version in Info.plist.
 #
-# usage: ./build-app.sh "/path/to/Export to MusicXML.app"
+# usage: ./build-app.sh "/path/to/MusicXML Bridge for Logic Pro.app"
 set -eu
 
 app=${1:?usage: build-app.sh <path to .app>}

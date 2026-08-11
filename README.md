@@ -60,15 +60,16 @@ looped notes, region chords, tempo curves, lyrics, and score articulations are
 expanded in the exported score. Performance articulation-ID assignments remain
 available in raw chunks but are not decoded yet.
 
-## The Export to MusicXML app
+## MusicXML Bridge for Logic Pro
 
 ```sh
 ./install.sh
 ```
 
-builds **Export to MusicXML.app** into `~/Applications` (override with
-`APP_DIR`) and links the command into `$HOME/bin` (`BIN_DIR`). Uninstall by
-deleting those two paths.
+builds **MusicXML Bridge for Logic Pro.app** into `~/Applications` (override
+with `APP_DIR`) and links the command, which keeps the name
+`logicx-to-musicxml`, into `$HOME/bin` (`BIN_DIR`). Uninstall by deleting
+those two paths.
 
 The app declares itself as a **Services** menu item, which is how Logic Pro
 gets one: Logic's Scripter plug-in cannot launch programs, but every app's
@@ -78,10 +79,9 @@ Save the Logic project first, then either drop it on the app, open it with the
 app, or choose **Logic Pro > Services > Export to MusicXML** and pick it. A
 dialog offers the two quantization grids (**off** included), triplet
 detection, the chord and MIDI options, and the project alternative when there
-is more than one; **Export…** asks where to
-save, writes the files, and reveals them in Finder. Give the Quick Action a
-keyboard shortcut in **System Settings > Keyboard > Keyboard Shortcuts >
-Services** if you want one.
+is more than one; **Export…** asks where to save, writes the files, and
+reveals them in Finder. Give the menu item a keyboard shortcut in **System
+Settings > Keyboard > Keyboard Shortcuts > Services** if you want one.
 
 The app is the same binary as the command — with arguments it is a command,
 without them it is the app — and the dialog is AppKit called directly through
@@ -98,7 +98,7 @@ VERSION=1.0 ./release.sh
 
 builds a universal (arm64 and x86_64) app, signs it with the hardened runtime,
 packs it into a drag-to-Applications disk image, notarizes it, and staples the
-ticket, leaving `build/ExportToMusicXML-1.0.dmg`. It needs a **Developer ID
+ticket, leaving `build/MusicXMLBridge-1.0.dmg`. It needs a **Developer ID
 Application** certificate from the paid Apple Developer Program, and
 notarization credentials stored once:
 
