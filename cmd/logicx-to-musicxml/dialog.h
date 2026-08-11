@@ -17,9 +17,10 @@ typedef struct {
 } ExportChoice;
 
 // ShowExportDialog asks for the export settings and where to save. A zero ok
-// means the user backed out.
+// means the user backed out. A set offerMenuItem adds the button that puts the
+// app in Logic's Services menu, for the runs that did not come from there.
 ExportChoice ShowExportDialog(const char *project, const char *destination,
-	const char **alternatives, int alternativeCount);
+	const char **alternatives, int alternativeCount, int offerMenuItem);
 
 // RunDroplet runs the app until the projects dropped on it — or one picked
 // from the open panel — have been exported.

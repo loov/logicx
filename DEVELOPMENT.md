@@ -79,5 +79,11 @@ document type that lets projects be dropped on it, and the `NSServices` entry
 that puts **Export to MusicXML** in every app's Services menu, answered by the
 provider in `dialog.m`.
 
+The menu item depends on the system having read that entry, which is what
+`install.sh` asks for with `lsregister` and `pbs`. Someone who dragged the app
+out of a disk image ran neither, so the dialog offers **Add to Logic Pro
+Menu** — `NSUpdateDynamicServices()` — whenever the app was opened by hand
+rather than from the menu or by a drop.
+
 Changing `CFBundleIdentifier` after a release makes it a different app to
 LaunchServices, Gatekeeper and notarization. Change it before, or not at all.

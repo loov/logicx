@@ -24,8 +24,9 @@ override both; uninstalling is deleting them.
 Save the Logic project, then drop it on the app, open it with the app, or
 choose **Logic Pro > Services > Export to MusicXML** and pick it. The app
 provides that menu item itself: Logic's Scripter plug-in cannot launch
-programs, but every app's Services menu can, and **System Settings > Keyboard
-> Keyboard Shortcuts > Services** will give it a shortcut.
+programs, but every app's Services menu can. Opening the app by hand offers an
+**Add to Logic Pro Menu** button that registers it, and **System Settings >
+Keyboard > Keyboard Shortcuts > Services** will give it a shortcut.
 
 A dialog offers the quantization grids, triplet detection, the chord and MIDI
 options, and the project alternative when there is more than one. **Export…**

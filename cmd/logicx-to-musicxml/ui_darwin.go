@@ -30,12 +30,12 @@ func runUI(project string) error {
 		C.RunDroplet()
 		return nil
 	}
-	return exportWithDialog(project)
+	return exportWithDialog(project, false)
 }
 
 //export goExport
-func goExport(path *C.char) *C.char {
-	if err := exportWithDialog(C.GoString(path)); err != nil {
+func goExport(path *C.char, offerMenuItem C.int) *C.char {
+	if err := exportWithDialog(C.GoString(path), offerMenuItem != 0); err != nil {
 		return C.CString(err.Error())
 	}
 	return nil
@@ -43,7 +43,7 @@ func goExport(path *C.char) *C.char {
 
 // exportWithDialog shows the export dialog for one project and writes what it
 // asks for. Backing out of the dialog is not an error.
-func exportWithDialog(project string) error {
+func exportWithDialog(project string, offerMenuItem bool) error {
 	bundle, err := logicx.OpenBundle(project)
 	if err != nil {
 		return err
@@ -60,8 +60,12 @@ func exportWithDialog(project string) error {
 		defer C.free(unsafe.Pointer(names[i]))
 	}
 
+	offer := C.int(0)
+	if offerMenuItem {
+		offer = 1
+	}
 	choice := C.ShowExportDialog(cProject, cDestination,
-		(**C.char)(unsafe.Pointer(&names[0])), C.int(len(names)))
+		(**C.char)(unsafe.Pointer(&names[0])), C.int(len(names)), offer)
 	if choice.ok == 0 {
 		return nil
 	}

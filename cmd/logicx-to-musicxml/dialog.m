@@ -38,8 +38,23 @@ static void addLabel(NSView *view, NSString *text, CGFloat y) {
 	[view addSubview:label];
 }
 
+// addToServicesMenu asks the system to reread the services every app
+// declares, which is all it takes for this one to appear in Logic's menu once
+// the app sits where it will stay.
+static void addToServicesMenu(void) {
+	NSUpdateDynamicServices();
+
+	NSAlert *done = [[NSAlert alloc] init];
+	done.messageText = @"Added to the Services menu";
+	done.informativeText = @"Logic Pro > Services > Export to MusicXML exports "
+		@"the open project. Assign a shortcut to it in System Settings > "
+		@"Keyboard > Keyboard Shortcuts > Services.\n\nAn app already running "
+		@"picks the menu item up when it is next started.";
+	[done runModal];
+}
+
 ExportChoice ShowExportDialog(const char *project, const char *destinationPath,
-	const char **alternatives, int alternativeCount) {
+	const char **alternatives, int alternativeCount, int offerMenuItem) {
 
 	ExportChoice choice;
 	memset(&choice, 0, sizeof(choice));
@@ -97,7 +112,17 @@ ExportChoice ShowExportDialog(const char *project, const char *destinationPath,
 		alert.accessoryView = view;
 		[alert addButtonWithTitle:@"Export…"];
 		[alert addButtonWithTitle:@"Cancel"];
-		if ([alert runModal] != NSAlertFirstButtonReturn) {
+		if (offerMenuItem) {
+			[alert addButtonWithTitle:@"Add to Logic Pro Menu"];
+		}
+
+		// The menu item button leaves the dialog standing: it answers a
+		// different question than the one being asked.
+		NSModalResponse response;
+		while ((response = [alert runModal]) == NSAlertThirdButtonReturn) {
+			addToServicesMenu();
+		}
+		if (response != NSAlertFirstButtonReturn) {
 			return choice;
 		}
 
@@ -132,8 +157,8 @@ void RevealFile(const char *path) {
 
 // exportProject runs one project through the Go side and reports what went
 // wrong, so a failed drop does not vanish silently.
-static void exportProject(NSString *path) {
-	char *failure = goExport((char *)path.UTF8String);
+static void exportProject(NSString *path, BOOL offerMenuItem) {
+	char *failure = goExport((char *)path.UTF8String, offerMenuItem);
 	if (failure == NULL) {
 		return;
 	}
@@ -150,6 +175,7 @@ static void exportProject(NSString *path) {
 @interface Droplet : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *dropped;
 @property(nonatomic) BOOL working;
+@property(nonatomic) BOOL fromMenu;
 @end
 
 @implementation Droplet
@@ -166,6 +192,7 @@ static void exportProject(NSString *path) {
 // so it does what a plain launch does; the guard is for the launch and the
 // service message arriving for the same run.
 - (void)exportProject:(NSPasteboard *)pasteboard userData:(NSString *)data error:(NSString **)error {
+	self.fromMenu = YES;
 	[self run];
 }
 
@@ -181,7 +208,7 @@ static void exportProject(NSString *path) {
 
 	if (self.dropped.count > 0) {
 		for (NSString *path in self.dropped) {
-			exportProject(path);
+			exportProject(path, NO);
 		}
 	} else {
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
@@ -190,7 +217,9 @@ static void exportProject(NSString *path) {
 		panel.allowsMultipleSelection = NO;
 		[NSApp activateIgnoringOtherApps:YES];
 		if ([panel runModal] == NSModalResponseOK) {
-			exportProject(panel.URL.path);
+			// Opening the app by hand is where the menu item is worth
+			// offering; arriving from the menu means it is already there.
+			exportProject(panel.URL.path, !self.fromMenu);
 		}
 	}
 	[NSApp terminate:nil];
