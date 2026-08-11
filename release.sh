@@ -26,7 +26,7 @@ set -eu
 
 cd "$(dirname "$0")"
 
-version=${VERSION:-1.0}
+version=${VERSION:-$(./version.sh)}
 identity=${SIGN_IDENTITY:-Developer ID Application}
 profile=${NOTARY_PROFILE:-logicx-notary}
 out=${OUT_DIR:-build}

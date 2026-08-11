@@ -3,7 +3,7 @@
 #
 # Assembles "MusicXML Bridge for Logic Pro.app" at the given path. ARCHS picks
 # what goes in the binary, this machine's architecture by default. VERSION
-# overrides the version in Info.plist.
+# overrides the version in Info.plist, which otherwise comes from the git tag.
 #
 # usage: ./build-app.sh "/path/to/MusicXML Bridge for Logic Pro.app"
 set -eu
@@ -34,7 +34,6 @@ rm -f "${slices[@]}"
 cp "$source/Info.plist" "$app/Contents/Info.plist"
 cp "$source/icon.icns" "$app/Contents/Resources/icon.icns"
 printf 'APPL????' > "$app/Contents/PkgInfo"
-if [[ -n ${VERSION:-} ]]; then
-	plutil -replace CFBundleShortVersionString -string "$VERSION" "$app/Contents/Info.plist"
-	plutil -replace CFBundleVersion -string "$VERSION" "$app/Contents/Info.plist"
-fi
+version=${VERSION:-$(cd "$(dirname "$0")" && ./version.sh)}
+plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$version" "$app/Contents/Info.plist"
