@@ -184,10 +184,11 @@ static NSString *const logicBundleID = @"com.apple.logic10";
 
 // frontLogicProject is the project Logic Pro has open, so that the menu item
 // exports what the musician is looking at rather than asking which file it
-// was. Nil for every way that can fail — Logic not running, no project open,
-// no permission to ask, a project never saved — each of which lands the caller
-// back on the open panel. unsaved reports a project with changes Logic has not
-// written yet, which is what an export would miss.
+// was. It answers for the menu item only, since that is the invocation that
+// came from Logic. Nil for every way that can fail — Logic not running, no
+// project open, no permission to ask, a project never saved — each of which
+// lands the caller back on the open panel. unsaved reports a project with
+// changes Logic has not written yet, which is what an export would miss.
 static NSString *frontLogicProject(BOOL *unsaved) {
 	*unsaved = NO;
 	if ([NSRunningApplication runningApplicationsWithBundleIdentifier:logicBundleID].count == 0) {
@@ -258,8 +259,10 @@ static NSString *frontLogicProject(BOOL *unsaved) {
 		for (NSString *path in self.dropped) {
 			exportProject(path, NO);
 		}
-	} else if ((open = frontLogicProject(&unsavedProject)) != nil) {
-		exportProject(open, !self.fromMenu);
+	} else if (self.fromMenu && (open = frontLogicProject(&unsavedProject)) != nil) {
+		// Only the menu item speaks for Logic. Opening the app by hand is a
+		// question about some project, not about the one Logic happens to hold.
+		exportProject(open, NO);
 	} else {
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
 		panel.message = @"Choose a saved Logic Pro project";

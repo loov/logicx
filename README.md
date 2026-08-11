@@ -23,9 +23,9 @@ override both; uninstalling is deleting them.
 
 Save the Logic project, then choose **Logic Pro > Services > Export to
 MusicXML**, which exports the project Logic has open — it asks Logic which one
-that is, so the first run wants permission to do so. Dropping a project on the
-app, or opening it with the app, works the same way, and with nothing to go on
-it asks for a project. The app
+that is, so the first run wants permission to do so. Every other way in names
+its own project: drop one on the app, open one with the app, or open the app
+by itself and it asks which. The app
 provides that menu item itself: Logic's Scripter plug-in cannot launch
 programs, but every app's Services menu can. Opening the app by hand offers an
 **Add to Logic Pro Menu** button that registers it, and **System Settings >
