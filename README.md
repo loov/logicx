@@ -1,10 +1,90 @@
 # logicx
 
-Go library for read-only inspection of Logic Pro `.logicx` project bundles.
-It exposes every plist value (including extensionless binary plists) and every
-raw `ProjectData` chunk, plus decoded project metadata, channel strips, Audio
-Units, MIDI note sequences, score articulations, markers, tempo maps, and
-key/time signatures.
+Read Logic Pro projects from Go, and export them as MusicXML.
+
+This is unofficial and reverse-engineered, not affiliated with or endorsed by
+Apple. Apple documents none of the format, so everything here is best effort,
+worked out from real projects: it decodes what has been figured out, skips
+what it does not recognise, and can be wrong or incomplete for projects,
+plug-ins or Logic versions it has not met. Read an exported score against the
+project before trusting it, and expect a Logic update to be able to break the
+parsing. Nothing here ever writes to a bundle, but keep backups of
+irreplaceable projects anyway.
+
+## MusicXML Bridge for Logic Pro
+
+```sh
+./install.sh
+```
+
+builds **MusicXML Bridge for Logic Pro.app** into `~/Applications` and links
+the command, `logicx-to-musicxml`, into `$HOME/bin`. `APP_DIR` and `BIN_DIR`
+override both; uninstalling is deleting them.
+
+Save the Logic project, then drop it on the app, open it with the app, or
+choose **Logic Pro > Services > Export to MusicXML** and pick it. The app
+provides that menu item itself: Logic's Scripter plug-in cannot launch
+programs, but every app's Services menu can, and **System Settings > Keyboard
+> Keyboard Shortcuts > Services** will give it a shortcut.
+
+A dialog offers the quantization grids, triplet detection, the chord and MIDI
+options, and the project alternative when there is more than one. **Export…**
+asks where to save, writes the files, and reveals them in Finder.
+
+The app is the same binary as the command — with arguments it is a command,
+without them it is the app — and its dialog is AppKit through cgo.
+
+## Command line
+
+```sh
+logicx-to-musicxml -o score.musicxml song.logicx
+```
+
+| flag | default | |
+|---|---|---|
+| `-o` | stdout | where the score is written |
+| `-alternative` | first | which project alternative to export |
+| `-quantize` | `1/16` | coarsest grid notes snap to; `off` keeps Logic's timing |
+| `-quantize-chords` | `1/4` | grid chord symbols snap to; `off` keeps theirs |
+| `-triplets` | true | notate beats played in thirds as triplets |
+| `-realize-chords` | false | voice chord staves as pitches, not rhythm slashes |
+| `-midi` | false | also write the raw notes beside `-o` as a MIDI file |
+| `-ui` | false | ask for the settings in the dialog |
+
+`-midi` is worth knowing about: notation programs quantize and detect tuplets
+on import better than a grid snap here can, and the MusicXML alongside carries
+the chord symbols, sections and layout that MIDI cannot express.
+
+## What the export carries
+
+**Parts.** Sequences sharing a Logic name merge into one part. Overlapping
+notes are spread across voices, and silence in the first voice becomes rests.
+
+**Maps.** Tempo, key and time signatures are reconstructed, asymmetric beat
+grouping included. Markers become bold system text and close the preceding bar
+with a double barline — deliberately not rehearsal marks, which notation
+programs renumber into their own A, B, C and so lose the section name.
+
+**Chords.** Region chords stay on their own sequence; project chords join a
+staff that already plays them, or get a `Project Chords` staff. They are
+written as semantic MusicXML harmony elements, and land on their own grid,
+since a chord change belongs on the beat however loosely it was played. A
+staff with no recorded notes becomes a chord chart, one rhythm slash per beat.
+
+**Timing.** Notes snap to a notation grid, refined automatically where they
+crowd closer than it, and durations split into tied notatable values, so raw
+performance data — a Melodyne transcription, say — still reads. A beat whose
+notes fit thirds better than the straight grid is written as a triplet.
+Turning quantization off turns detection off with it, since it works by
+measuring how far onsets sit off a grid there no longer is.
+
+**Notation.** Staff notes are spelled from the key signature, or from the
+chord track where the key is the C major Logic starts out with. Region
+placement, right-edge cropping and loops are reconstructed, with looped notes,
+region chords, tempo curves, lyrics and score articulations expanded.
+Performance articulation-ID assignments stay in the raw chunks, undecoded.
+
+## Library
 
 ```go
 bundle, err := logicx.OpenBundle("song.logicx")
@@ -16,76 +96,11 @@ fmt.Println(bundle.PropertyLists["Resources/ProjectInformation.plist"])
 fmt.Println(bundle.Alternatives[0].Project.Sequences[0].Notes[0].Pitch)
 ```
 
-For a bytes-only safety boundary, use `ParseProjectData` and `ParseMetadata`.
-Both XML and binary property lists are supported.
-
-Export the discovered MIDI sequences as MusicXML:
-
-```sh
-go run ./cmd/logicx-to-musicxml -o score.musicxml song.logicx
-```
-
-Pass `-midi` to write the note data beside the score as a Standard MIDI File,
-with Logic's own timing left unquantized. Notation programs quantize and detect
-tuplets when they import MIDI, which they do better than a grid snap here can;
-the MusicXML alongside carries the chord symbols, sections and layout that MIDI
-has no way to express.
-
-Sequences with the same Logic name are combined into one MusicXML part.
-Tempo, key, and time-signature maps are reconstructed, including asymmetric
-beat grouping; markers become bold system text and end the preceding bar with a
-double barline. They are deliberately not rehearsal marks, which notation
-programs renumber into their own A, B, C sequence and so lose the section name. Region chords stay on their owning sequence; decoded project
-chords get a `Project Chords` staff unless an existing staff already contains
-them, and chords use semantic MusicXML harmony elements. Staff notes are
-spelled from the key signature, or from the chord track where the key signature
-is the C major Logic starts out with. Chord symbols land on
-their own grid, `-quantize-chords`, a quarter note by default, since a chord
-change belongs on the beat however loosely it was played. A staff with no
-recorded notes is written as a chord chart, one rhythm slash per beat; pass
-`-realize-chords` to voice the chord tones as pitches instead.
-Timing is snapped to a notation grid — `-quantize`, a 1/16 note by default,
-refined automatically where notes crowd closer than that — and durations are
-split into tied notatable values, so raw performance data (a Melodyne
-transcription, say) still produces a readable score. A beat whose notes fit
-thirds of a beat better than the straight grid is written as a triplet, unless
-`-triplets=false` says to keep the straight grid. Either grid can be turned
-off with `-quantize off` or `-quantize-chords off`, which writes what Logic
-recorded, tick for tick; triplet detection goes with it, since it measures how
-far the onsets sit off the grid there is no longer. Notes that overlap within a part
-are spread across voices, and silence in the first voice is written out as
-rests.
-Active MIDI-region placement, right-edge cropping, and loops are reconstructed;
-looped notes, region chords, tempo curves, lyrics, and score articulations are
-expanded in the exported score. Performance articulation-ID assignments remain
-available in raw chunks but are not decoded yet.
-
-## MusicXML Bridge for Logic Pro
-
-```sh
-./install.sh
-```
-
-builds **MusicXML Bridge for Logic Pro.app** into `~/Applications` (override
-with `APP_DIR`) and links the command, which keeps the name
-`logicx-to-musicxml`, into `$HOME/bin` (`BIN_DIR`). Uninstall by deleting
-those two paths.
-
-The app declares itself as a **Services** menu item, which is how Logic Pro
-gets one: Logic's Scripter plug-in cannot launch programs, but every app's
-Services menu can.
-
-Save the Logic project first, then either drop it on the app, open it with the
-app, or choose **Logic Pro > Services > Export to MusicXML** and pick it. A
-dialog offers the two quantization grids (**off** included), triplet
-detection, the chord and MIDI options, and the project alternative when there
-is more than one; **Export…** asks where to save, writes the files, and
-reveals them in Finder. Give the menu item a keyboard shortcut in **System
-Settings > Keyboard > Keyboard Shortcuts > Services** if you want one.
-
-The app is the same binary as the command — with arguments it is a command,
-without them it is the app — and the dialog is AppKit called directly through
-cgo.
+Every plist value (binary ones without an extension included) and every raw
+`ProjectData` chunk is exposed, alongside decoded metadata, channel strips,
+Audio Units, MIDI sequences, score articulations, markers, tempo maps and
+key/time signatures. `ParseProjectData` and `ParseMetadata` take bytes, for a
+boundary that touches no files.
 
 ## Release a disk image
 
@@ -96,36 +111,36 @@ build needs. To hand the app to someone else:
 VERSION=1.0 ./release.sh
 ```
 
-builds a universal (arm64 and x86_64) app, signs it with the hardened runtime,
-packs it into a drag-to-Applications disk image, notarizes it, and staples the
-ticket, leaving `build/MusicXMLBridge-1.0.dmg`. It needs a **Developer ID
-Application** certificate from the paid Apple Developer Program, and
-notarization credentials stored once:
+builds a universal app, signs it with the hardened runtime, packs it into a
+drag-to-Applications image, notarizes it and staples the ticket, leaving
+`build/MusicXMLBridge-1.0.dmg`. It needs a **Developer ID Application**
+certificate from the paid Apple Developer Program, and notarization
+credentials stored once:
 
 ```sh
 xcrun notarytool store-credentials logicx-notary \
     --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
 ```
 
+`SIGN_IDENTITY=-` signs ad-hoc and skips notarization, to check the image
+builds without a certificate; `SIGN_IDENTITY`, `NOTARY_PROFILE` and `OUT_DIR`
+override the rest. Gatekeeper refuses a signed but unnotarized image on every
+Mac but the one that built it.
+
 Pushing a `v*` tag runs the same script on GitHub and attaches the image to
-the release. That needs `SIGNING_CERTIFICATE` (the base64 of a `.p12` export
-of the Developer ID certificate *and its private key*) and `SIGNING_PASSWORD`,
-plus notarization credentials: either an App Store Connect API key
-(`NOTARY_KEY`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`), or an Apple ID with an
-app-specific password (`NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`,
-`NOTARY_PASSWORD`), which is the way in while a team waits on App Store
-Connect API access. The workflow comments say where each comes from.
+the release. That takes `SIGNING_CERTIFICATE` (base64 of a `.p12` export of
+the certificate *and its private key*) and `SIGNING_PASSWORD`, plus either an
+App Store Connect API key (`NOTARY_KEY`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`)
+or an Apple ID with an app-specific password (`NOTARY_APPLE_ID`,
+`NOTARY_TEAM_ID`, `NOTARY_PASSWORD`), which is the way in while a team waits
+on App Store Connect API access. The workflow comments say where each secret
+comes from.
 
-`SIGN_IDENTITY`, `NOTARY_PROFILE` and `OUT_DIR` override the defaults;
-`SIGN_IDENTITY=-` signs ad-hoc and skips notarization, for checking the image
-builds without a certificate. A disk image that is signed but not notarized is
-refused by Gatekeeper on any Mac but the one that built it.
-
-The binary format is undocumented and may change between Logic versions.
-Keep backups of irreplaceable projects. This package never writes to a bundle.
+---
 
 Format knowledge is based on
 [`lpx-toolkit`](https://github.com/rhydlewis/lpx-toolkit) and
-[`lpx-explorer`](https://github.com/rhydlewis/lpx-explorer).
+[`lpx-explorer`](https://github.com/rhydlewis/lpx-explorer). Logic Pro is a
+trademark of Apple Inc.
 
 License: GPL-3.0-or-later.
