@@ -6,9 +6,19 @@
 #   SIGNING_CERTIFICATE    base64 of the Developer ID Application .p12
 #                          (`base64 -i cert.p12 | pbcopy`)
 #   SIGNING_PASSWORD       the password the .p12 was exported with
-#   NOTARY_KEY             base64 of the App Store Connect API key .p8
+#
+# and notarization credentials, either an App Store Connect API key:
+#
+#   NOTARY_KEY             base64 of the API key .p8
 #   NOTARY_KEY_ID          the key ID that came with it
 #   NOTARY_ISSUER_ID       the issuer ID from App Store Connect > Integrations
+#
+# or, where the team is still waiting on App Store Connect API access, an
+# Apple ID and an app-specific password from account.apple.com:
+#
+#   NOTARY_APPLE_ID        the Apple ID of a team member
+#   NOTARY_TEAM_ID         the team ID from developer.apple.com > Membership
+#   NOTARY_PASSWORD        an app-specific password for that Apple ID
 
 name: release
 
@@ -50,15 +60,23 @@ jobs:
 
       - name: Build, sign and notarize
         env:
+          NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
-          NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           TAG: ${{ github.ref_name }}
         run: |
           set -eu
-          echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          NOTARY_KEY="$RUNNER_TEMP/notary.p8" VERSION="${TAG#v}" ./release.sh
-          rm "$RUNNER_TEMP/notary.p8"
+          # Whichever notarization credentials the repository holds; the API
+          # key wins when it is there, since it is scoped and revocable.
+          if [[ -n "$NOTARY_KEY_BASE64" ]]; then
+            echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+            export NOTARY_KEY="$RUNNER_TEMP/notary.p8"
+          fi
+          VERSION="${TAG#v}" ./release.sh
+          rm -f "$RUNNER_TEMP/notary.p8"
 
       - name: Attach the disk image to the release
         env:

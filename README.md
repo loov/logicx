@@ -108,12 +108,13 @@ xcrun notarytool store-credentials logicx-notary \
 ```
 
 Pushing a `v*` tag runs the same script on GitHub and attaches the image to
-the release. That needs five repository secrets — `SIGNING_CERTIFICATE` (the
-base64 of a `.p12` export of the Developer ID certificate *and its private
-key*), `SIGNING_PASSWORD`, and `NOTARY_KEY`, `NOTARY_KEY_ID`,
-`NOTARY_ISSUER_ID` from an App Store Connect API key, which is the
-notarization credential a build machine can hold. The workflow comments say
-where each comes from.
+the release. That needs `SIGNING_CERTIFICATE` (the base64 of a `.p12` export
+of the Developer ID certificate *and its private key*) and `SIGNING_PASSWORD`,
+plus notarization credentials: either an App Store Connect API key
+(`NOTARY_KEY`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`), or an Apple ID with an
+app-specific password (`NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`,
+`NOTARY_PASSWORD`), which is the way in while a team waits on App Store
+Connect API access. The workflow comments say where each comes from.
 
 `SIGN_IDENTITY`, `NOTARY_PROFILE` and `OUT_DIR` override the defaults;
 `SIGN_IDENTITY=-` signs ad-hoc and skips notarization, for checking the image

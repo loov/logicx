@@ -15,7 +15,9 @@
 #
 # On a build machine, where no one can type a keychain password, set
 # NOTARY_KEY to an App Store Connect API key file instead, with NOTARY_KEY_ID
-# and NOTARY_ISSUER_ID beside it.
+# and NOTARY_ISSUER_ID beside it. Teams still waiting on App Store Connect API
+# access can set NOTARY_APPLE_ID, NOTARY_TEAM_ID and NOTARY_PASSWORD (an
+# app-specific password) instead, which needs no approval.
 #
 # SIGN_IDENTITY, NOTARY_PROFILE, VERSION and OUT_DIR override the defaults.
 # Without a notary profile it still signs and builds the image, which is fine
@@ -56,12 +58,18 @@ if [[ $identity == "-" ]]; then
 	echo "$dmg (ad-hoc signed, for local checks only)"
 	exit 0
 fi
-# A stored profile is the convenient way by hand; an App Store Connect API key
-# is the one a build machine can hold, so NOTARY_KEY wins where it is set.
+# A stored profile is the convenient way by hand, but a build machine has no
+# one to unlock a keychain, so it passes credentials instead: an App Store
+# Connect API key where the team has API access, an Apple ID and an
+# app-specific password where it does not.
 credentials=(--keychain-profile "$profile")
 if [[ -n ${NOTARY_KEY:-} ]]; then
 	credentials=(--key "$NOTARY_KEY" --key-id "${NOTARY_KEY_ID:?NOTARY_KEY needs NOTARY_KEY_ID}"
 		--issuer "${NOTARY_ISSUER_ID:?NOTARY_KEY needs NOTARY_ISSUER_ID}")
+elif [[ -n ${NOTARY_PASSWORD:-} ]]; then
+	credentials=(--apple-id "${NOTARY_APPLE_ID:?NOTARY_PASSWORD needs NOTARY_APPLE_ID}"
+		--team-id "${NOTARY_TEAM_ID:?NOTARY_PASSWORD needs NOTARY_TEAM_ID}"
+		--password "$NOTARY_PASSWORD")
 elif ! xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1; then
 	echo "$dmg (signed but NOT notarized: no \"$profile\" credentials)" >&2
 	echo "Gatekeeper will refuse it on another Mac; see the comment at the top of $0" >&2
