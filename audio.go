@@ -45,14 +45,15 @@ const (
 	audioFileSampleRate = 476
 	audioFileChannels   = 480
 	audioFileBitDepth   = 482
-	// audioFileOverview is ceil(frames/128)+8 in every file seen, plausibly
-	// the length of the waveform overview Logic draws from.
+	// audioFileOverview is ceil(frames/256)*2+8 in all but one of the 248
+	// files seen, plausibly the length of the waveform overview Logic draws
+	// from.
 	audioFileOverview = 530
 	audioFileTail     = 578
 )
 
-// fields is the layout of an audio file chunk. overview is written rather
-// than decoded: it is derived from the frame count.
+// fields is the layout of an audio file chunk. overview is held apart from f:
+// Save derives it from the frame count.
 func (f *AudioFile) fields(overview *uint32) []record.Field {
 	return []record.Field{
 		record.UTF16(audioFileNameLength, &f.Name,
@@ -86,7 +87,9 @@ func findAudioFiles(chunks []*Chunk) []AudioFile {
 }
 
 // Save writes f's fields into the chunk it was decoded from, keeping the
-// bytes this package does not decode. ProjectData.AudioFiles is not updated.
+// bytes this package does not decode. The overview length is recomputed only
+// when the frame count changed, since one file seen stores a value the
+// formula does not explain. ProjectData.AudioFiles is not updated.
 func (f *AudioFile) Save() error {
 	if f.chunk == nil {
 		return errors.New("logicx: audio file was not decoded from a project")
@@ -95,7 +98,14 @@ func (f *AudioFile) Save() error {
 	if len(f.Dir) >= audioFileDirSize {
 		return fmt.Errorf("logicx: audio file folder longer than %d bytes", audioFileDirSize-1)
 	}
-	overview := (f.Frames+127)/128 + 8
+	var stored AudioFile
+	var overview uint32
+	if !record.Decode(f.chunk.Data, stored.fields(&overview)...) {
+		return fmt.Errorf("logicx: audio file %q no longer decodes", f.Name)
+	}
+	if f.Frames != stored.Frames {
+		overview = (f.Frames+255)/256*2 + 8
+	}
 	data, err := record.Encode(f.chunk.Data, f.fields(&overview)...)
 	if err != nil {
 		return fmt.Errorf("logicx: audio file %q: %w", f.Name, err)
