@@ -2,6 +2,16 @@
 
 package logicx
 
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"math"
+	"slices"
+
+	"github.com/loov/logicx/internal/record"
+)
+
 // atomSize is the granularity of an event sequence. Every EvSq payload is a
 // whole number of these.
 const atomSize = 16
@@ -72,4 +82,125 @@ func sequenceEvents(chunks []*Chunk, visit func(chunk *Chunk, event *Event)) {
 			visit(chunk, event)
 		}
 	}
+}
+
+// eventSentinel is the record that ends every event sequence.
+const eventSentinel = 0xf1
+
+// eventRef locates a decoded record in the tree, so that a decoded value can
+// write itself back, be removed or be copied.
+type eventRef struct {
+	chunk *Chunk
+	event *Event
+}
+
+// check reports an error when the value was not decoded from a project or
+// its record has been deleted. It and reorder scan the sequence, so saving
+// every record of a sequence is quadratic in its length; an index from event
+// to position would fix that should sequences of many thousands of events
+// need saving in bulk.
+func (r eventRef) check(what string) error {
+	if r.event == nil || !slices.Contains(r.chunk.Events, r.event) {
+		return fmt.Errorf("logicx: %s is not in a project", what)
+	}
+	return nil
+}
+
+// save writes fields over the record and moves it when its position changed,
+// keeping the sequence in position order.
+func (r eventRef) save(what string, fields ...record.Field) error {
+	if err := r.check(what); err != nil {
+		return err
+	}
+	data, err := record.Encode(r.event.Data, fields...)
+	if err != nil {
+		return fmt.Errorf("logicx: %s: %w", what, err)
+	}
+	r.event.Data = data
+	r.chunk.reorder(r.event)
+	return nil
+}
+
+// delete removes the record from its sequence.
+func (r eventRef) delete(what string) error {
+	if err := r.check(what); err != nil {
+		return err
+	}
+	r.chunk.Events = slices.DeleteFunc(r.chunk.Events, func(e *Event) bool { return e == r.event })
+	return nil
+}
+
+// duplicate inserts a copy of the record right after it and returns a
+// reference to the copy.
+func (r eventRef) duplicate(what string) (eventRef, error) {
+	if err := r.check(what); err != nil {
+		return eventRef{}, err
+	}
+	i := slices.Index(r.chunk.Events, r.event)
+	copied := &Event{Type: r.event.Type, Offset: r.event.Offset, Data: bytes.Clone(r.event.Data)}
+	r.chunk.Events = slices.Insert(r.chunk.Events, i+1, copied)
+	return eventRef{r.chunk, copied}, nil
+}
+
+// eventPosition is the sort key of a record: its position and fraction, with
+// the sentinel after everything.
+func eventPosition(e *Event) uint64 {
+	if e.Type == eventSentinel || len(e.Data) < 8 {
+		return math.MaxUint64
+	}
+	return uint64(binary.LittleEndian.Uint32(e.Data[4:]))<<16 | uint64(binary.LittleEndian.Uint16(e.Data[2:]))
+}
+
+// reorder moves event so that the sequence stays in position order. A record
+// already in order is left where it is, so that records sharing a position
+// keep their relative order; a moved one goes after the records at its new
+// position.
+func (c *Chunk) reorder(event *Event) {
+	i := slices.Index(c.Events, event)
+	at := eventPosition(event)
+	if (i == 0 || eventPosition(c.Events[i-1]) <= at) && (i+1 == len(c.Events) || at <= eventPosition(c.Events[i+1])) {
+		return
+	}
+	events := slices.Delete(c.Events, i, i+1)
+	j, _ := slices.BinarySearchFunc(events, at, func(e *Event, at uint64) int {
+		if eventPosition(e) <= at {
+			return -1
+		}
+		return 1
+	})
+	c.Events = slices.Insert(events, j, event)
+}
+
+// atomRef locates a 16-byte atom within a record, for the score symbols a
+// note record carries in its trailing atoms.
+type atomRef struct {
+	eventRef
+	offset int
+}
+
+// atom returns the atom's bytes.
+func (r atomRef) atom() []byte { return r.event.Data[r.offset : r.offset+atomSize] }
+
+// save writes fields over the atom; their offsets are within the atom.
+func (r atomRef) save(what string, fields ...record.Field) error {
+	if err := r.check(what); err != nil {
+		return err
+	}
+	if r.offset+atomSize > len(r.event.Data) {
+		return fmt.Errorf("logicx: %s is no longer in its record", what)
+	}
+	atom, err := record.Encode(r.atom(), fields...)
+	if err != nil {
+		return fmt.Errorf("logicx: %s: %w", what, err)
+	}
+	copy(r.atom(), atom)
+	return nil
+}
+
+// events returns the chunk's events, or none for a missing chunk.
+func (c *Chunk) events() []*Event {
+	if c == nil {
+		return nil
+	}
+	return c.Events
 }

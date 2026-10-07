@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -32,11 +31,19 @@ type MIDISequence struct {
 
 // MIDINote contains the stable fields of Logic's 32-byte note record.
 // Raw preserves the remaining undocumented fields.
+//
+// Position and Duration place the note in the arrangement: shifted by its
+// region, repeated by a looped region and cut at the region's end.
+// SourcePosition and SourceDuration are the values stored in the region's
+// sequence, and are what Save writes. Every repeat of a looped note shares one
+// record, so saving any of them changes them all.
 type MIDINote struct {
 	Position           uint32
+	SourcePosition     uint32
 	PositionFraction   uint16
 	Pitch              uint8
 	Duration           uint32
+	SourceDuration     uint32
 	Lyrics             []Lyric
 	ScoreArticulations []ScoreArticulation
 	ScoreFermatas      []ScoreFermata
@@ -44,6 +51,7 @@ type MIDINote struct {
 	ScoreArpeggios     []ScoreArpeggio
 	ScoreSlurs         []ScoreSlur
 	Raw                [32]byte
+	ref                eventRef
 }
 
 // Lyric is a score lyric attached to a MIDI note. Verse is zero when Logic
@@ -54,6 +62,8 @@ type Lyric struct {
 	Verse            uint8
 	Text             string
 	Raw              []byte
+	text             string
+	ref              eventRef
 }
 
 // ScoreArticulationKind identifies a notation symbol attached to a note.
@@ -83,6 +93,7 @@ type ScoreArticulation struct {
 	Flags   uint8
 	Flipped bool
 	Raw     [16]byte
+	ref     atomRef
 }
 
 // ScoreFermata is a Logic Score Editor fermata attached to a note.
@@ -90,6 +101,7 @@ type ScoreFermata struct {
 	Inverted bool
 	Code     uint8
 	Raw      [16]byte
+	ref      atomRef
 }
 
 // ScoreSlurType identifies one endpoint of a reconstructed slur.
@@ -157,6 +169,7 @@ type ScoreOrnament struct {
 	Kind             ScoreOrnamentKind
 	Code             uint8
 	Raw              [32]byte
+	ref              eventRef
 }
 
 // ScoreArpeggioDirection identifies an arpeggio's explicit direction.
@@ -178,6 +191,7 @@ type ScoreArpeggio struct {
 	Direction        ScoreArpeggioDirection
 	Code             uint8
 	Raw              [32]byte
+	ref              eventRef
 }
 
 // Marker is a Logic global marker. RTF preserves the formatted source text;
@@ -189,7 +203,7 @@ type Marker struct {
 	Name     string
 	RTF      string
 	Raw      [48]byte
-	event    *Event
+	ref      eventRef
 }
 
 // sequenceSource is a decoded event sequence before arrangement links place
@@ -231,9 +245,8 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 		if !ok {
 			continue
 		}
-		events := chunk.Events
-		notes := findMIDINotes(events)
-		chords := decodeChordEvents(events)
+		notes := findMIDINotes(chunk)
+		chords := decodeChordEvents(chunk)
 		if len(notes) == 0 && len(chords) == 0 {
 			continue
 		}
@@ -413,19 +426,23 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 // symbols attached to them. Lyrics, ornaments and arpeggios are separate
 // records preceding the note they belong to; articulations, fermatas and slur
 // segments are extra atoms of the note record itself.
-func findMIDINotes(events []*Event) []MIDINote {
+func findMIDINotes(chunk *Chunk) []MIDINote {
 	var notes []MIDINote
 	var lyrics []Lyric
 	var ornaments []ScoreOrnament
 	var arpeggios []ScoreArpeggio
 	var slurSegments []scoreSlurSegment
-	for _, event := range events {
+	for _, event := range chunk.Events {
+		ref := eventRef{chunk, event}
 		if event.Type == eventScore {
 			if lyric, ok := decodeLyric(event.Data); ok {
+				lyric.ref = ref
 				lyrics = append(lyrics, lyric)
 			} else if ornament, ok := decodeScoreOrnament(event.Data); ok {
+				ornament.ref = ref
 				ornaments = append(ornaments, ornament)
 			} else if arpeggio, ok := decodeScoreArpeggio(event.Data); ok {
+				arpeggio.ref = ref
 				arpeggios = append(arpeggios, arpeggio)
 			}
 			continue
@@ -437,6 +454,7 @@ func findMIDINotes(events []*Event) []MIDINote {
 		if !ok {
 			continue
 		}
+		note.ref = ref
 		for len(lyrics) > 0 && (lyrics[0].Position < note.Position ||
 			lyrics[0].Position == note.Position && lyrics[0].PositionFraction <= note.PositionFraction) {
 			if lyrics[0].Position == note.Position && lyrics[0].PositionFraction == note.PositionFraction {
@@ -464,10 +482,12 @@ func findMIDINotes(events []*Event) []MIDINote {
 				continue
 			}
 			if fermata, ok := decodeScoreFermata(atom); ok {
+				fermata.ref = atomRef{ref, offset}
 				note.ScoreFermatas = append(note.ScoreFermatas, fermata)
 				continue
 			}
 			if articulation, ok := decodeScoreArticulation(atom); ok {
+				articulation.ref = atomRef{ref, offset}
 				note.ScoreArticulations = append(note.ScoreArticulations, articulation)
 			}
 		}
@@ -487,69 +507,190 @@ func scorePositionAtOrBefore(position uint32, fraction uint16, note MIDINote) bo
 // decodeMIDINote decodes a 32-byte note-on record.
 func decodeMIDINote(data []byte) (MIDINote, bool) {
 	var note MIDINote
-	ok := record.Decode(data,
+	if !record.Decode(data, append(note.fields(), record.Copy(0, note.Raw[:]))...) || note.Pitch > 127 {
+		return MIDINote{}, false
+	}
+	note.Position, note.Duration = note.SourcePosition, note.SourceDuration
+	return note, true
+}
+
+// fields is the layout of a note record.
+func (n *MIDINote) fields() []record.Field {
+	return []record.Field{
 		record.Equal(0, 0x90),
-		record.Uint16LE(2, &note.PositionFraction),
-		record.Uint32LE(4, &note.Position),
-		record.Uint8(12, &note.Pitch),
+		record.Uint16LE(2, &n.PositionFraction),
+		record.Uint32LE(4, &n.SourcePosition),
+		record.Uint8(12, &n.Pitch),
 		// Bytes 14..22 and 26..27 carry velocity and per-note tuning, which
 		// Melodyne transcriptions fill in; only the record markers are fixed.
 		record.Equal(13, 0),
 		record.Equal(23, 0x89, 0, 0),
-		record.Uint32LE(28, &note.Duration),
-		record.Copy(0, note.Raw[:]),
-	)
-	if !ok || note.Pitch > 127 {
-		return MIDINote{}, false
+		record.Uint32LE(28, &n.SourceDuration),
 	}
-	return note, true
 }
+
+// Save writes n's pitch and its source position and duration into the record
+// it was decoded from, keeping the bytes this package does not decode, and
+// moves the record when its position changed. Attached symbols are saved on
+// their own. The project's sequences are not updated; see
+// [ProjectData.Refresh].
+func (n *MIDINote) Save() error {
+	if n.Pitch > 127 {
+		return fmt.Errorf("logicx: note pitch %d out of range", n.Pitch)
+	}
+	if err := n.ref.save("note", n.fields()...); err != nil {
+		return err
+	}
+	copy(n.Raw[:], n.ref.event.Data)
+	return nil
+}
+
+// Delete removes n's record, with the articulations, fermatas and slur
+// markers stored in it. Lyrics, ornaments and arpeggios are records of their
+// own and are kept.
+func (n *MIDINote) Delete() error { return n.ref.delete("note") }
+
+// Duplicate inserts a copy of n's record after it and returns the copy, to be
+// changed and saved. The copy carries n's articulations, fermatas and slur
+// markers but not its lyrics, ornaments or arpeggios.
+func (n *MIDINote) Duplicate() (MIDINote, error) {
+	ref, err := n.ref.duplicate("note")
+	if err != nil {
+		return MIDINote{}, err
+	}
+	copied := *n
+	copied.ref = ref
+	copied.Lyrics, copied.ScoreOrnaments, copied.ScoreArpeggios = nil, nil, nil
+	copied.ScoreArticulations = slices.Clone(n.ScoreArticulations)
+	for i := range copied.ScoreArticulations {
+		copied.ScoreArticulations[i].ref.eventRef = ref
+	}
+	copied.ScoreFermatas = slices.Clone(n.ScoreFermatas)
+	for i := range copied.ScoreFermatas {
+		copied.ScoreFermatas[i].ref.eventRef = ref
+	}
+	copied.ScoreSlurs = slices.Clone(n.ScoreSlurs)
+	return copied, nil
+}
+
+// articulationKind names an articulation code, and reports whether the
+// symbol is drawn flipped.
+func articulationKind(code uint8) articulationName {
+	switch code {
+	case 3:
+		return articulationName{ScoreArticulationStaccato, false}
+	case 9:
+		return articulationName{ScoreArticulationTenuto, false}
+	case 5:
+		return articulationName{ScoreArticulationAccent, false}
+	case 6:
+		return articulationName{ScoreArticulationMarcato, true}
+	case 7:
+		return articulationName{ScoreArticulationMarcato, false}
+	case 4, 8:
+		return articulationName{ScoreArticulationStaccatissimo, false}
+	}
+	return articulationName{}
+}
+
+// articulationName is what an articulation code means.
+type articulationName struct {
+	kind    ScoreArticulationKind
+	flipped bool
+}
+
+// articulationCodes are the codes articulationKind names.
+var articulationCodes = []uint8{3, 9, 5, 6, 7, 4, 8}
 
 // decodeScoreArticulation decodes a 16-byte articulation record that trails a
 // note.
 func decodeScoreArticulation(data []byte) (ScoreArticulation, bool) {
 	var articulation ScoreArticulation
-	if !record.Decode(data,
-		record.Equal(0, 0, 0, 0, 0),
-		record.Uint8(4, &articulation.Code),
-		record.Equal(5, 0),
-		record.Uint8(6, &articulation.Flags),
-		record.Equal(7, 0x85, 0, 0, 0, 0, 0, 0, 0, 0),
-		record.Copy(0, articulation.Raw[:]),
-	) || articulation.Code == 0 {
+	if !record.Decode(data, append(articulation.fields(), record.Copy(0, articulation.Raw[:]))...) || articulation.Code == 0 {
 		return ScoreArticulation{}, false
 	}
-	switch articulation.Code {
-	case 3:
-		articulation.Kind = ScoreArticulationStaccato
-	case 9:
-		articulation.Kind = ScoreArticulationTenuto
-	case 5:
-		articulation.Kind = ScoreArticulationAccent
-	case 6:
-		articulation.Kind = ScoreArticulationMarcato
-		articulation.Flipped = true
-	case 7:
-		articulation.Kind = ScoreArticulationMarcato
-	case 4, 8:
-		articulation.Kind = ScoreArticulationStaccatissimo
-	}
+	name := articulationKind(articulation.Code)
+	articulation.Kind, articulation.Flipped = name.kind, name.flipped
 	return articulation, true
+}
+
+// fields is the layout of an articulation atom.
+func (a *ScoreArticulation) fields() []record.Field {
+	return []record.Field{
+		record.Equal(0, 0, 0, 0, 0),
+		record.Uint8(4, &a.Code),
+		record.Equal(5, 0),
+		record.Uint8(6, &a.Flags),
+		record.Equal(7, 0x85, 0, 0, 0, 0, 0, 0, 0, 0),
+	}
+}
+
+// Save writes a's code and flags into the note record it was decoded from.
+// When Kind or Flipped was changed, the code is chosen to match them.
+// The project's sequences are not updated; see [ProjectData.Refresh].
+func (a *ScoreArticulation) Save() error {
+	code, ok := symbolCode(a.Code, articulationName{a.Kind, a.Flipped}, articulationKind, articulationCodes)
+	if !ok {
+		return fmt.Errorf("logicx: no articulation code for %q", a.Kind)
+	}
+	a.Code = code
+	if err := a.ref.save("articulation", a.fields()...); err != nil {
+		return err
+	}
+	copy(a.Raw[:], a.ref.atom())
+	return nil
 }
 
 // decodeScoreFermata decodes a 16-byte fermata record that trails a note.
 func decodeScoreFermata(data []byte) (ScoreFermata, bool) {
 	var fermata ScoreFermata
-	if !record.Decode(data,
-		record.Equal(0, 0, 0, 0, 0),
-		record.Uint8(4, &fermata.Code),
-		record.Equal(5, 0, 0, 0x85, 0, 0, 0, 0, 0, 0, 0, 0),
-		record.Copy(0, fermata.Raw[:]),
-	) || fermata.Code != 0 && fermata.Code != 19 {
+	if !record.Decode(data, append(fermata.fields(), record.Copy(0, fermata.Raw[:]))...) ||
+		fermata.Code != 0 && fermata.Code != fermataInverted {
 		return ScoreFermata{}, false
 	}
-	fermata.Inverted = fermata.Code == 19
+	fermata.Inverted = fermata.Code == fermataInverted
 	return fermata, true
+}
+
+// fermataInverted is the code of an inverted fermata; an upright one is zero.
+const fermataInverted = 19
+
+// fields is the layout of a fermata atom.
+func (f *ScoreFermata) fields() []record.Field {
+	return []record.Field{
+		record.Equal(0, 0, 0, 0, 0),
+		record.Uint8(4, &f.Code),
+		record.Equal(5, 0, 0, 0x85, 0, 0, 0, 0, 0, 0, 0, 0),
+	}
+}
+
+// Save writes f into the note record it was decoded from, with the code set
+// from Inverted. The project's sequences are not updated; see
+// [ProjectData.Refresh].
+func (f *ScoreFermata) Save() error {
+	f.Code = 0
+	if f.Inverted {
+		f.Code = fermataInverted
+	}
+	if err := f.ref.save("fermata", f.fields()...); err != nil {
+		return err
+	}
+	copy(f.Raw[:], f.ref.atom())
+	return nil
+}
+
+// symbolCode returns the code to store for a symbol named want: code itself
+// when it already names want, otherwise the first of codes that does.
+func symbolCode[N comparable](code uint8, want N, name func(uint8) N, codes []uint8) (uint8, bool) {
+	if name(code) == want {
+		return code, true
+	}
+	for _, c := range codes {
+		if name(c) == want {
+			return c, true
+		}
+	}
+	return 0, false
 }
 
 // scoreSlurSegment is the raw per-note slur marker Logic stores. Slur
@@ -641,46 +782,130 @@ func nextNotePosition(notes []MIDINote, start int) int {
 // decodeScoreOrnament decodes a positioned 32-byte ornament record.
 func decodeScoreOrnament(data []byte) (ScoreOrnament, bool) {
 	var ornament ScoreOrnament
-	if !decodePositionedScoreSymbol(data, 0x42, &ornament.Position, &ornament.PositionFraction, &ornament.Code, ornament.Raw[:]) {
+	if !record.Decode(data, append(ornament.fields(), record.Copy(0, ornament.Raw[:]))...) {
 		return ScoreOrnament{}, false
 	}
-	switch ornament.Code {
-	case 0:
-		ornament.Kind = ScoreOrnamentTurn
-	case 1:
-		ornament.Kind = ScoreOrnamentInvertedTurnWithLine
-	case 2:
-		ornament.Kind = ScoreOrnamentInvertedMordent
-	case 3:
-		ornament.Kind = ScoreOrnamentMordent
-	case 4:
-		ornament.Kind = ScoreOrnamentTrill
-	case 7:
-		ornament.Kind = ScoreOrnamentTremolo
-	case 19:
-		ornament.Kind = ScoreOrnamentInvertedTurn
-	}
+	ornament.Kind = ornamentKind(ornament.Code)
 	return ornament, true
+}
+
+// ornamentKind names an ornament code.
+func ornamentKind(code uint8) ScoreOrnamentKind {
+	switch code {
+	case 0:
+		return ScoreOrnamentTurn
+	case 1:
+		return ScoreOrnamentInvertedTurnWithLine
+	case 2:
+		return ScoreOrnamentInvertedMordent
+	case 3:
+		return ScoreOrnamentMordent
+	case 4:
+		return ScoreOrnamentTrill
+	case 7:
+		return ScoreOrnamentTremolo
+	case 19:
+		return ScoreOrnamentInvertedTurn
+	}
+	return ScoreOrnamentUnknown
+}
+
+// ornamentCodes are the codes ornamentKind names.
+var ornamentCodes = []uint8{0, 1, 2, 3, 4, 7, 19}
+
+// fields is the layout of an ornament record.
+func (o *ScoreOrnament) fields() []record.Field {
+	return positionedScoreSymbol(0x42, &o.Position, &o.PositionFraction, &o.Code)
+}
+
+// Save writes o into the record it was decoded from, keeping the bytes this
+// package does not decode, and moves the record when its position changed.
+// When Kind was changed, the code is chosen to match it. The project's
+// sequences are not updated; see [ProjectData.Refresh].
+func (o *ScoreOrnament) Save() error {
+	code, ok := symbolCode(o.Code, o.Kind, ornamentKind, ornamentCodes)
+	if !ok {
+		return fmt.Errorf("logicx: no ornament code for %q", o.Kind)
+	}
+	o.Code = code
+	if err := o.ref.save("ornament", o.fields()...); err != nil {
+		return err
+	}
+	copy(o.Raw[:], o.ref.event.Data)
+	return nil
+}
+
+// Delete removes o's record from the project.
+func (o *ScoreOrnament) Delete() error { return o.ref.delete("ornament") }
+
+// Duplicate inserts a copy of o's record after it and returns the copy, to be
+// changed and saved.
+func (o *ScoreOrnament) Duplicate() (ScoreOrnament, error) {
+	ref, err := o.ref.duplicate("ornament")
+	copied := *o
+	copied.ref = ref
+	return copied, err
 }
 
 // decodeScoreArpeggio decodes a positioned 32-byte arpeggio record.
 func decodeScoreArpeggio(data []byte) (ScoreArpeggio, bool) {
 	var arpeggio ScoreArpeggio
-	if !decodePositionedScoreSymbol(data, 0x49, &arpeggio.Position, &arpeggio.PositionFraction, &arpeggio.Code, arpeggio.Raw[:]) || arpeggio.Code > 2 {
+	if !record.Decode(data, append(arpeggio.fields(), record.Copy(0, arpeggio.Raw[:]))...) || arpeggio.Code > 2 {
 		return ScoreArpeggio{}, false
 	}
-	if arpeggio.Code == 1 {
-		arpeggio.Direction = ScoreArpeggioDirectionUp
-	} else if arpeggio.Code == 2 {
-		arpeggio.Direction = ScoreArpeggioDirectionDown
-	}
+	arpeggio.Direction = arpeggioDirection(arpeggio.Code)
 	return arpeggio, true
 }
 
-// decodePositionedScoreSymbol decodes the 32-byte record shared by the
-// positioned score symbols, matching symbol as the record's discriminator.
-func decodePositionedScoreSymbol(data []byte, symbol uint8, position *uint32, fraction *uint16, code *uint8, raw []byte) bool {
-	return record.Decode(data,
+// arpeggioDirection names an arpeggio code.
+func arpeggioDirection(code uint8) ScoreArpeggioDirection {
+	switch code {
+	case 1:
+		return ScoreArpeggioDirectionUp
+	case 2:
+		return ScoreArpeggioDirectionDown
+	}
+	return ScoreArpeggioDirectionNone
+}
+
+// fields is the layout of an arpeggio record.
+func (a *ScoreArpeggio) fields() []record.Field {
+	return positionedScoreSymbol(0x49, &a.Position, &a.PositionFraction, &a.Code)
+}
+
+// Save writes a into the record it was decoded from, keeping the bytes this
+// package does not decode, and moves the record when its position changed.
+// The code is set from Direction. The project's sequences are not updated;
+// see [ProjectData.Refresh].
+func (a *ScoreArpeggio) Save() error {
+	code, ok := symbolCode(a.Code, a.Direction, arpeggioDirection, []uint8{0, 1, 2})
+	if !ok {
+		return fmt.Errorf("logicx: no arpeggio code for %q", a.Direction)
+	}
+	a.Code = code
+	if err := a.ref.save("arpeggio", a.fields()...); err != nil {
+		return err
+	}
+	copy(a.Raw[:], a.ref.event.Data)
+	return nil
+}
+
+// Delete removes a's record from the project.
+func (a *ScoreArpeggio) Delete() error { return a.ref.delete("arpeggio") }
+
+// Duplicate inserts a copy of a's record after it and returns the copy, to be
+// changed and saved.
+func (a *ScoreArpeggio) Duplicate() (ScoreArpeggio, error) {
+	ref, err := a.ref.duplicate("arpeggio")
+	copied := *a
+	copied.ref = ref
+	return copied, err
+}
+
+// positionedScoreSymbol is the layout of the 32-byte record shared by the
+// positioned score symbols, with symbol as the record's discriminator.
+func positionedScoreSymbol(symbol uint8, position *uint32, fraction *uint16, code *uint8) []record.Field {
+	return []record.Field{
 		record.Equal(0, 0x70, 0),
 		record.Uint16LE(2, fraction),
 		record.Uint32LE(4, position),
@@ -688,42 +913,114 @@ func decodePositionedScoreSymbol(data []byte, symbol uint8, position *uint32, fr
 		record.Uint8(11, code),
 		record.Equal(12, symbol, 0, 0, 1),
 		record.Equal(23, 0x88),
-		record.Copy(0, raw),
-	)
+	}
 }
 
-// decodeLyric decodes a lyric record. The text occupies every atom after the
-// third, so a record too short to hold one is not a lyric.
+// lyricText is where a lyric's text begins: every atom after the third.
+const lyricText = 48
+
+// decodeLyric decodes a lyric record. A record too short to hold any text is
+// not a lyric.
 func decodeLyric(data []byte) (Lyric, bool) {
 	var lyric Lyric
-	if !record.Decode(data,
-		record.Equal(0, 0x70, 0),
-		record.Uint16LE(2, &lyric.PositionFraction),
-		record.Uint32LE(4, &lyric.Position),
-		record.Equal(8, 0, 0, 0),
-		record.Uint8(11, &lyric.Verse),
-		record.Equal(12, 0x3d, 0, 0, 1),
-	) {
+	if !record.Decode(data, lyric.fields()...) || len(data) < lyricText+atomSize {
 		return Lyric{}, false
 	}
-	size := len(data)
-	if size < 64 {
-		return Lyric{}, false
-	}
-	// ponytail: Logic's fixture-proven ASCII cells are decoded here; Raw
-	// remains available if non-ASCII lyrics prove a different encoding.
+	// Logic sometimes stores a trailing space, which Text drops.
+	lyric.Text = strings.TrimSpace(lyricStoredText(data[lyricText:]))
+	lyric.text = lyric.Text
+	lyric.Raw = bytes.Clone(data)
+	return lyric, lyric.Text != ""
+}
+
+// lyricStoredText reads the text atoms of a lyric record. Each atom holds two
+// cells of text, each filled from its end backwards: seven characters before
+// the atom's continuation byte, then eight.
+//
+// Only ASCII text has been seen; Raw keeps the bytes should other text prove
+// to be encoded differently.
+func lyricStoredText(data []byte) string {
 	var text []byte
-	for offset := 48; offset < size; offset += 8 {
-		end := min(offset+8, size)
-		for i := end - 1; i >= offset; i-- {
+	for offset := 0; offset+8 <= len(data); offset += 8 {
+		for i := offset + 7; i >= offset; i-- {
 			if data[i] != 0 && data[i] != 0x88 {
 				text = append(text, data[i])
 			}
 		}
 	}
-	lyric.Text = strings.TrimSpace(string(text))
-	lyric.Raw = bytes.Clone(data[:size])
-	return lyric, lyric.Text != ""
+	return string(text)
+}
+
+// fields is the layout of a lyric record, apart from its text.
+func (l *Lyric) fields() []record.Field {
+	return []record.Field{
+		record.Equal(0, 0x70, 0),
+		record.Uint16LE(2, &l.PositionFraction),
+		record.Uint32LE(4, &l.Position),
+		record.Equal(8, 0, 0, 0),
+		record.Uint8(11, &l.Verse),
+		record.Equal(12, 0x3d, 0, 0, 1),
+	}
+}
+
+// encodeLyricText lays text out in atoms as decodeLyric reads it.
+func encodeLyricText(text string) ([]byte, error) {
+	if text == "" || strings.TrimSpace(text) != text || !printable([]byte(text)) {
+		return nil, fmt.Errorf("logicx: lyric %q is not trimmed, non-empty printable ASCII", text)
+	}
+	// Fifteen characters fit an atom, but Logic always leaves room for a
+	// terminating zero.
+	atoms := len(text)/15 + 1
+	data := make([]byte, atoms*atomSize)
+	k := 0
+	for offset := 0; offset < len(data); offset += 8 {
+		end := offset + 7
+		if offset%atomSize == 0 {
+			data[end] = 0x88
+			end--
+		}
+		for i := end; i >= offset && k < len(text); i-- {
+			data[i] = text[k]
+			k++
+		}
+	}
+	return data, nil
+}
+
+// Save writes l's position and verse into the record it was decoded from,
+// keeping the bytes this package does not decode, and moves the record when
+// its position changed. Changed text is rewritten, resizing the record to
+// fit. The project's sequences are not updated; see [ProjectData.Refresh].
+func (l *Lyric) Save() error {
+	if err := l.ref.check("lyric"); err != nil {
+		return err
+	}
+	if l.Text != l.text {
+		text, err := encodeLyricText(l.Text)
+		if err != nil {
+			return err
+		}
+		l.ref.event.Data = append(slices.Clip(l.ref.event.Data[:lyricText]), text...)
+		l.text = l.Text
+	}
+	if err := l.ref.save("lyric", l.fields()...); err != nil {
+		return err
+	}
+	l.Raw = bytes.Clone(l.ref.event.Data)
+	return nil
+}
+
+// Delete removes l's record from the project.
+func (l *Lyric) Delete() error { return l.ref.delete("lyric") }
+
+// Duplicate inserts a copy of l's record after it and returns the copy, to be
+// changed and saved.
+func (l *Lyric) Duplicate() (Lyric, error) {
+	ref, err := l.ref.duplicate("lyric")
+	copied := *l
+	copied.Raw = bytes.Clone(l.Raw)
+	copied.ref = ref
+	return copied, err
 }
 
 // sequenceName returns the region name stored at the end of an MSeq payload.
@@ -748,12 +1045,12 @@ func findMarkers(chunks []*Chunk) []Marker {
 
 	var markers []Marker
 	decode := markerDecoder(texts)
-	sequenceEvents(chunks, func(_ *Chunk, event *Event) {
+	sequenceEvents(chunks, func(chunk *Chunk, event *Event) {
 		if event.Type != eventMarker {
 			return
 		}
 		if marker, ok := decode(event.Data); ok {
-			marker.event = event
+			marker.ref = eventRef{chunk, event}
 			markers = append(markers, marker)
 		}
 	})
@@ -790,20 +1087,29 @@ func (m *Marker) fields() []record.Field {
 }
 
 // Save writes m's position, length and text reference into the record it was
-// decoded from, keeping the bytes this package does not decode. The text is
-// held in a separate chunk, so Name and RTF are not written.
-// ProjectData.Markers is not updated.
+// decoded from, keeping the bytes this package does not decode, and moves the
+// record when its position changed. The text is held in a separate chunk, so
+// Name and RTF are not written. ProjectData.Markers is not updated; see
+// [ProjectData.Refresh].
 func (m *Marker) Save() error {
-	if m.event == nil {
-		return errors.New("logicx: marker was not decoded from a project")
+	if err := m.ref.save("marker", m.fields()...); err != nil {
+		return err
 	}
-	data, err := record.Encode(m.event.Data, m.fields()...)
-	if err != nil {
-		return fmt.Errorf("logicx: marker: %w", err)
-	}
-	m.event.Data = data
-	copy(m.Raw[:], data)
+	copy(m.Raw[:], m.ref.event.Data)
 	return nil
+}
+
+// Delete removes m's record from the project. The text chunk it refers to is
+// kept.
+func (m *Marker) Delete() error { return m.ref.delete("marker") }
+
+// Duplicate inserts a copy of m's record after it and returns the copy, to be
+// changed and saved. The copy refers to the same text.
+func (m *Marker) Duplicate() (Marker, error) {
+	ref, err := m.ref.duplicate("marker")
+	copied := *m
+	copied.ref = ref
+	return copied, err
 }
 
 // markerRTF extracts the RTF payload of a TxSq chunk.

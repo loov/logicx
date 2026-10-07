@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/loov/logicx/internal/record"
 )
 
 // AudioUnit is one plug-in instance in a channel strip. Slot is its position
@@ -28,6 +32,10 @@ type AudioUnit struct {
 	Offset       int
 	strip        uint16
 	midi         bool
+	chunk        *Chunk
+	// name and setting are Name and Setting as decoded, so that Save writes
+	// them only when they were changed.
+	name, setting string
 }
 
 // Builtin reports whether the plug-in ships with Logic rather than being an
@@ -71,6 +79,10 @@ type Track struct {
 	MIDIFX     []AudioUnit
 	AudioFX    []AudioUnit
 	strip      uint16
+	chunk      *Chunk
+	// name is Name as decoded, so that Save writes it only when it was
+	// changed.
+	name string
 }
 
 // Plug-in instances are stored one per chunk, sharing a chunk type with other
@@ -126,7 +138,9 @@ func findAudioUnits(chunks []*Chunk) []AudioUnit {
 			Slot:         binary.LittleEndian.Uint16(chunk.Data[pluginSlotOffset:]),
 			Offset:       chunk.Offset,
 			strip:        binary.LittleEndian.Uint16(chunk.Header[14:]),
+			chunk:        chunk,
 		}
+		unit.name, unit.setting = unit.Name, unit.Setting
 		if unit.Name == "" && unit.Manufacturer == "" {
 			continue
 		}
@@ -203,9 +217,68 @@ func findTracks(chunks []*Chunk) []Track {
 			Offset: chunk.Offset + chunkHeaderSize + channelStripRecord,
 			Active: descriptor[2]&0x04 != 0 || descriptor[4] != 0,
 			strip:  binary.LittleEndian.Uint16(chunk.Header[14:]),
+			chunk:  chunk, name: name,
 		})
 	}
 	return tracks
+}
+
+// channelStripName is where the name sits within a channel strip chunk,
+// after the record's leading byte.
+const (
+	channelStripName     = channelStripRecord + 1
+	channelStripNameSize = 15
+)
+
+// Save writes t's name into the channel strip it was decoded from, when it was
+// changed. Kind and Active are not written. ProjectData.Tracks is not
+// updated; see [ProjectData.Refresh].
+func (t *Track) Save() error {
+	if t.chunk == nil {
+		return errors.New("logicx: track was not decoded from a project")
+	}
+	if t.Name == t.name {
+		return nil
+	}
+	if t.Name == "" || !printable([]byte(t.Name)) {
+		return fmt.Errorf("logicx: track name %q is not non-empty printable ASCII", t.Name)
+	}
+	data, err := record.Encode(t.chunk.Data, record.CString(channelStripName, channelStripNameSize, &t.Name))
+	if err != nil {
+		return fmt.Errorf("logicx: track %q: %w", t.Name, err)
+	}
+	t.chunk.Data, t.name = data, t.Name
+	return nil
+}
+
+// Save writes a's slot, and its name and setting when they were changed, into
+// the plug-in chunk it was decoded from. The component description is not
+// written: it identifies the plug-in whose state the chunk holds.
+// ProjectData.AudioUnits and the tracks are not updated; see
+// [ProjectData.Refresh].
+func (a *AudioUnit) Save() error {
+	if a.chunk == nil {
+		return errors.New("logicx: plug-in was not decoded from a project")
+	}
+	fields := []record.Field{record.Uint16LE(pluginSlotOffset, &a.Slot)}
+	for _, f := range []struct {
+		value, decoded *string
+		offset, size   int
+	}{{&a.Name, &a.name, pluginName, pluginNameSize}, {&a.Setting, &a.setting, pluginSetting, pluginSettingSize}} {
+		if *f.value == *f.decoded {
+			continue
+		}
+		if !printable([]byte(*f.value)) {
+			return fmt.Errorf("logicx: plug-in text %q is not printable ASCII", *f.value)
+		}
+		fields = append(fields, record.CString(f.offset, f.size, f.value))
+	}
+	data, err := record.Encode(a.chunk.Data, fields...)
+	if err != nil {
+		return fmt.Errorf("logicx: plug-in %q: %w", a.Name, err)
+	}
+	a.chunk.Data, a.name, a.setting = data, a.Name, a.Setting
+	return nil
 }
 
 // assignAudioUnits attaches each plug-in to the channel strip named in its

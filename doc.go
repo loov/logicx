@@ -11,10 +11,16 @@
 // sequences the events within them. [ProjectData.MarshalBinary] writes the
 // tree back, recomputing only its size fields, so an unmodified parse writes
 // back byte for byte. Decoded values point at the node they came from, and
-// those with a Save method write their fields back into it, leaving every
-// byte this package does not decode untouched. Values whose positions are
-// computed — placed or looped notes, project chords, signatures moved onto
-// bar 1 — have no Save.
+// their Save methods write their fields back into it, leaving every byte this
+// package does not decode untouched.
+//
+// Where a decoded position is computed — notes and chords placed by their
+// region or link, signatures moved onto bar 1 — the value also carries the
+// position as stored, and Save writes that one. Records of an event sequence
+// can be removed with Delete and copied with Duplicate, and Save moves a
+// record whose position changed, keeping the sequence in position order.
+// None of these update the values held by [ProjectData];
+// [ProjectData.Refresh] decodes them again.
 //
 // # Container
 //

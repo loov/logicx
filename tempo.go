@@ -4,7 +4,6 @@ package logicx
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -22,7 +21,7 @@ type TempoChange struct {
 	// control points encode?
 	Flags uint8
 	Raw   [32]byte
-	event *Event
+	ref   eventRef
 }
 
 // findTempoChanges collects the tempo map from every event sequence, sorted by
@@ -30,12 +29,12 @@ type TempoChange struct {
 // costs little and survives layout changes.
 func findTempoChanges(chunks []*Chunk) []TempoChange {
 	var changes []TempoChange
-	sequenceEvents(chunks, func(_ *Chunk, event *Event) {
+	sequenceEvents(chunks, func(chunk *Chunk, event *Event) {
 		if event.Type != eventTempo {
 			return
 		}
 		if change, ok := decodeTempoChange(event.Data); ok {
-			change.event = event
+			change.ref = eventRef{chunk, event}
 			changes = append(changes, change)
 		}
 	})
@@ -76,22 +75,30 @@ func decodeTempoChange(data []byte) (TempoChange, bool) {
 }
 
 // Save writes c's fields into the record it was decoded from, keeping the
-// bytes this package does not decode. ProjectData.TempoChanges is not
-// updated.
+// bytes this package does not decode, and moves the record when its position
+// changed. ProjectData.TempoChanges is not updated; see
+// [ProjectData.Refresh].
 func (c *TempoChange) Save() error {
-	if c.event == nil {
-		return errors.New("logicx: tempo change was not decoded from a project")
-	}
 	value := math.Round(c.BPM * 10_000)
 	if !(value >= 1 && value <= maxTempoValue) {
 		return fmt.Errorf("logicx: tempo %v BPM out of range", c.BPM)
 	}
 	scaled := uint32(value)
-	data, err := record.Encode(c.event.Data, c.fields(&scaled)...)
-	if err != nil {
-		return fmt.Errorf("logicx: tempo change: %w", err)
+	if err := c.ref.save("tempo change", c.fields(&scaled)...); err != nil {
+		return err
 	}
-	c.event.Data = data
-	copy(c.Raw[:], data)
+	copy(c.Raw[:], c.ref.event.Data)
 	return nil
+}
+
+// Delete removes c's record from the project.
+func (c *TempoChange) Delete() error { return c.ref.delete("tempo change") }
+
+// Duplicate inserts a copy of c's record after it and returns the copy, to be
+// changed and saved.
+func (c *TempoChange) Duplicate() (TempoChange, error) {
+	ref, err := c.ref.duplicate("tempo change")
+	copied := *c
+	copied.ref = ref
+	return copied, err
 }

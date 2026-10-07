@@ -126,14 +126,14 @@ func Code4(offset int, value *string) Field {
 	}
 }
 
-// CString captures a NUL-padded string in size bytes at offset. Encoding
-// requires room for at least one NUL.
+// CString captures a NUL-padded string in size bytes at offset. A string of
+// exactly size bytes fills the field with no NUL.
 func CString(offset, size int, value *string) Field {
 	return fixed{offset, size,
 		func(b []byte) bool { s, _, _ := bytes.Cut(b, []byte{0}); *value = string(s); return true },
 		func(b []byte) error {
-			if len(*value) >= size {
-				return fmt.Errorf("record: string longer than %d bytes", size-1)
+			if len(*value) > size {
+				return fmt.Errorf("record: string longer than %d bytes", size)
 			}
 			clear(b)
 			copy(b, *value)

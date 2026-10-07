@@ -91,6 +91,10 @@ func (f *AudioFile) Save() error {
 	if f.chunk == nil {
 		return errors.New("logicx: audio file was not decoded from a project")
 	}
+	// Logic reads the folder up to a NUL, so one must fit.
+	if len(f.Dir) >= audioFileDirSize {
+		return fmt.Errorf("logicx: audio file folder longer than %d bytes", audioFileDirSize-1)
+	}
 	overview := (f.Frames+127)/128 + 8
 	data, err := record.Encode(f.chunk.Data, f.fields(&overview)...)
 	if err != nil {

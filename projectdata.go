@@ -64,10 +64,19 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 	if err != nil {
 		return ProjectData{}, err
 	}
-	var header [24]byte
-	copy(header[:], data[:24])
-	p := ProjectData{
-		Header: header, Chunks: chunks, AudioUnits: findAudioUnits(chunks),
+	p := ProjectData{Header: [24]byte(data[:24]), Chunks: chunks}
+	p.Refresh()
+	return p, nil
+}
+
+// Refresh decodes p's values again from its Chunks. Save, Delete and
+// Duplicate change the chunks rather than the values held by p, and values
+// derived from several records — placed notes, chord durations, slurs — can
+// only be recomputed from the whole tree.
+func (p *ProjectData) Refresh() {
+	chunks := p.Chunks
+	*p = ProjectData{
+		Header: p.Header, Chunks: chunks, AudioUnits: findAudioUnits(chunks),
 		Tracks: findTracks(chunks), Sequences: findMIDISequences(chunks), Markers: findMarkers(chunks),
 		TempoChanges:   findTempoChanges(chunks),
 		TimeSignatures: findTimeSignatureChanges(chunks), KeySignatures: findKeySignatureChanges(chunks),
@@ -76,7 +85,6 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 		Environment: findEnvironment(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
-	return p, nil
 }
 
 // parseChunks splits ProjectData into its chunk records. Every chunk is

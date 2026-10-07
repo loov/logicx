@@ -4,6 +4,7 @@ package logicx
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"slices"
 
@@ -14,24 +15,36 @@ import (
 // Pitches contains MIDI note numbers. IntervalMask is relative to
 // RootPitchClass. ScaleMask is the scale for scale events and the harmonic
 // context for chord events; spelling values and Raw preserve Logic's codes.
+//
+// Position and PositionFraction place the chord in the arrangement, and
+// Duration runs to the next chord or the end of its region; none of them is
+// stored. SourcePosition and SourcePositionFraction are the values stored in
+// the chord's sequence, and are what Save writes. A project chord's sequence
+// is placed by a link on the global harmony track, which Save does not move.
 type Chord struct {
-	Position         uint32
-	PositionFraction uint16
-	Duration         uint32
-	Name             string
-	Pitches          []uint8
-	SequenceID       uint32
-	IntervalMask     uint16
-	ScaleMask        uint16
-	Attributes       uint32
-	RootPitchClass   uint8
-	RootSpelling     uint8
-	NoChord          bool
-	Scale            bool
-	HasBass          bool
-	BassPitchClass   uint8
-	BassSpelling     uint8
-	Raw              []byte
+	Position               uint32
+	SourcePosition         uint32
+	PositionFraction       uint16
+	SourcePositionFraction uint16
+	Duration               uint32
+	Name                   string
+	Pitches                []uint8
+	SequenceID             uint32
+	IntervalMask           uint16
+	ScaleMask              uint16
+	Attributes             uint32
+	RootPitchClass         uint8
+	RootSpelling           uint8
+	NoChord                bool
+	Scale                  bool
+	HasBass                bool
+	BassPitchClass         uint8
+	BassSpelling           uint8
+	Raw                    []byte
+	// noBass is the stored bass spelling and pitch class of a chord without
+	// a bass.
+	noBass [2]uint8
+	ref    eventRef
 }
 
 // Logic's chord-link locators precede project positions by 3840 ticks even
@@ -60,13 +73,13 @@ type chordLink struct {
 // findProjectChords decodes the global chord track: every "Global Harmonies"
 // sequence links to child sequences that hold one chord event each.
 func findProjectChords(chunks []*Chunk) []Chord {
-	events := make(map[chordSequenceID][]*Event)
+	events := make(map[chordSequenceID]*Chunk)
 	durations := make(map[chordSequenceID]uint32)
 	for _, chunk := range chunks {
 		id := chunkSequenceID(chunk)
 		switch {
 		case chunk.Type == "EvSq":
-			events[id] = chunk.Events
+			events[id] = chunk
 		case chunk.Type == "MSeq" && sequenceName(chunk.Data) == "MIDI Region":
 			durations[id] = sequenceDuration(chunk.Data)
 		}
@@ -78,7 +91,7 @@ func findProjectChords(chunks []*Chunk) []Chord {
 			continue
 		}
 		id := chunkSequenceID(chunk)
-		for _, link := range decodeChordLinks(events[id]) {
+		for _, link := range decodeChordLinks(events[id].events()) {
 			decoded := decodeChordEvents(events[chordSequenceID{id.group, link.sequence}])
 			if len(decoded) == 0 || link.position > math.MaxUint32-projectChordPositionBias {
 				continue
@@ -150,13 +163,14 @@ func decodeChordLinks(events []*Event) []chordLink {
 }
 
 // decodeChordEvents decodes the chord and scale events of one sequence.
-func decodeChordEvents(events []*Event) []Chord {
+func decodeChordEvents(chunk *Chunk) []Chord {
 	var chords []Chord
-	for _, event := range events {
+	for _, event := range chunk.events() {
 		if event.Type != eventScore {
 			continue
 		}
 		if chord, ok := decodeChordEvent(event.Data); ok {
+			chord.ref = eventRef{chunk, event}
 			chords = append(chords, chord)
 		}
 	}
@@ -183,24 +197,20 @@ func decodeChordLink(data []byte) (chordLink, bool) {
 // those rather than that it is malformed.
 func decodeChordEvent(data []byte) (Chord, bool) {
 	var chord Chord
-	var rootSpelling, bassSpelling uint8
-	if len(data) < 16 || data[15] > 1 || !record.Decode(data,
-		record.Equal(0, 0x70, 0),
-		record.Uint16LE(2, &chord.PositionFraction),
-		record.Uint32LE(4, &chord.Position),
-		record.Equal(12, 0x67, 0, 0),
-		record.Uint16LE(16, &chord.IntervalMask),
-		record.Uint8(18, &bassSpelling),
-		record.Uint8(19, &chord.BassPitchClass),
-		record.Uint8(20, &rootSpelling),
-		record.Uint8(21, &chord.RootPitchClass),
-		record.Equal(23, 0xb2),
-		record.Uint32LE(28, &chord.Attributes),
-	) || chord.IntervalMask&^uint16(0x0fff) != 0 {
+	var bassSpelling uint8
+	if len(data) < 16 || data[15] > 1 || !record.Decode(data, chord.fields(&bassSpelling)...) ||
+		chord.IntervalMask&^uint16(0x0fff) != 0 {
 		return Chord{}, false
 	}
+	chord.Position, chord.PositionFraction = chord.SourcePosition, chord.SourcePositionFraction
 	chord.Raw = slices.Clone(data)
-	if chord.IntervalMask == 0 && chord.RootPitchClass == 15 && chord.Attributes == 0x00007f80 {
+	chord.HasBass = bassSpelling <= 4 && chord.BassPitchClass <= 11
+	if chord.HasBass {
+		chord.BassSpelling = bassSpelling
+	} else {
+		chord.noBass = [2]uint8{bassSpelling, chord.BassPitchClass}
+	}
+	if chord.IntervalMask == 0 && chord.RootPitchClass == 15 && chord.Attributes == noChordAttributes {
 		chord.Name, chord.NoChord = "no chord", true
 		return chord, true
 	}
@@ -209,11 +219,6 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 	}
 	chord.Scale = chord.Attributes&0x80 == 0
 	chord.ScaleMask = uint16(chord.Attributes>>16) & 0x0fff
-	chord.RootSpelling = rootSpelling
-	chord.HasBass = bassSpelling <= 4 && chord.BassPitchClass <= 11
-	if chord.HasBass {
-		chord.BassSpelling = bassSpelling
-	}
 	chord.Name = chordName(chord)
 	pitchMask := chord.IntervalMask
 	if chord.Scale {
@@ -230,6 +235,77 @@ func decodeChordEvent(data []byte) (Chord, bool) {
 		chord.Pitches = slices.Compact(chord.Pitches)
 	}
 	return chord, true
+}
+
+// noChordAttributes are the attributes of a "no chord" event.
+const noChordAttributes = 0x00007f80
+
+// fields is the layout of a chord or scale event. The bass spelling is held
+// in bassSpelling, since BassSpelling is only set for a chord with a bass.
+func (c *Chord) fields(bassSpelling *uint8) []record.Field {
+	return []record.Field{
+		record.Equal(0, 0x70, 0),
+		record.Uint16LE(2, &c.SourcePositionFraction),
+		record.Uint32LE(4, &c.SourcePosition),
+		record.Equal(12, 0x67, 0, 0),
+		record.Uint16LE(16, &c.IntervalMask),
+		record.Uint8(18, bassSpelling),
+		record.Uint8(19, &c.BassPitchClass),
+		record.Uint8(20, &c.RootSpelling),
+		record.Uint8(21, &c.RootPitchClass),
+		record.Equal(23, 0xb2),
+		record.Uint32LE(28, &c.Attributes),
+	}
+}
+
+// Save writes c into the record it was decoded from, keeping the bytes this
+// package does not decode, and moves the record when its source position
+// changed. NoChord, Scale, ScaleMask and HasBass are folded into the stored
+// masks, pitch classes and attributes; Name and Pitches are not read.
+// The project's chords and sequences are not updated; see
+// [ProjectData.Refresh].
+func (c *Chord) Save() error {
+	switch {
+	case c.NoChord:
+		c.IntervalMask, c.RootPitchClass, c.Attributes = 0, 15, noChordAttributes
+	case c.RootPitchClass > 11 || c.RootSpelling > 4 || c.IntervalMask&^0x0fff != 0 || c.ScaleMask&^0x0fff != 0:
+		return fmt.Errorf("logicx: chord root %d, spelling %d, masks %#x/%#x out of range",
+			c.RootPitchClass, c.RootSpelling, c.IntervalMask, c.ScaleMask)
+	default:
+		c.Attributes = c.Attributes&^(0x0fff<<16|0x80) | uint32(c.ScaleMask)<<16
+		if !c.Scale {
+			c.Attributes |= 0x80
+		}
+	}
+	bassSpelling := c.BassSpelling
+	switch {
+	case c.HasBass && (c.BassPitchClass > 11 || c.BassSpelling > 4):
+		return fmt.Errorf("logicx: chord bass %d, spelling %d out of range", c.BassPitchClass, c.BassSpelling)
+	case !c.HasBass && c.noBass == [2]uint8{}:
+		bassSpelling, c.BassPitchClass = 7, 15
+	case !c.HasBass:
+		bassSpelling, c.BassPitchClass = c.noBass[0], c.noBass[1]
+	}
+	if err := c.ref.save("chord", c.fields(&bassSpelling)...); err != nil {
+		return err
+	}
+	c.Raw = slices.Clone(c.ref.event.Data)
+	return nil
+}
+
+// Delete removes c's record from the project. Removing the only chord of a
+// project chord's sequence leaves its link pointing at an empty sequence.
+func (c *Chord) Delete() error { return c.ref.delete("chord") }
+
+// Duplicate inserts a copy of c's record after it and returns the copy, to be
+// changed and saved. A copied project chord joins the original's sequence, as
+// a grouped chord does.
+func (c *Chord) Duplicate() (Chord, error) {
+	ref, err := c.ref.duplicate("chord")
+	copied := *c
+	copied.Pitches, copied.Raw = slices.Clone(c.Pitches), slices.Clone(c.Raw)
+	copied.ref = ref
+	return copied, err
 }
 
 // chordSuffixes names an interval mask relative to the root.
