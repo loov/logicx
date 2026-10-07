@@ -3,6 +3,7 @@
 package logicx
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"os"
@@ -642,5 +643,109 @@ func TestParseProjectData_KeyMapIgnoresChordRegionKeys(t *testing.T) {
 	project = parseFixtureProject(t, "signature-map-key.logicx")
 	if len(project.KeySignatures) != 3 {
 		t.Fatalf("key map = %d changes, want 3", len(project.KeySignatures))
+	}
+}
+
+func TestProjectData_MarshalBinaryRoundTrips(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("testdata", "*.logicx", "Alternatives", "*", "ProjectData"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no fixtures")
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		project, err := ParseProjectData(data)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		got, err := project.MarshalBinary()
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if !slices.Equal(got, data) {
+			t.Errorf("%s: wrote %d bytes that differ from the %d read", path, len(got), len(data))
+		}
+	}
+}
+
+func TestParseProjectData_AudioFileRegionAndTrackRename(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("cmd", "logicx-from-audio", "template.logicx", "Alternatives", "000", "ProjectData"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := ParseProjectData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(project.AudioFiles) != 1 || len(project.AudioRegions) != 1 {
+		t.Fatalf("got %d audio files and %d regions, want 1 each", len(project.AudioFiles), len(project.AudioRegions))
+	}
+	file, region := project.AudioFiles[0], project.AudioRegions[0]
+	if file.Name != "Audio.wav" || file.Format != "WAVE" || file.Frames != 9106944 ||
+		file.SampleRate != 44100 || file.Channels != 2 || file.BitDepth != 16 || file.Size != 36503036 ||
+		file.Dir != "Audio Files" {
+		t.Errorf("audio file = %+v", file)
+	}
+	if region.Name != "Audio" || region.Frames != 9106944 {
+		t.Errorf("audio region = %+v", region)
+	}
+	track := slices.IndexFunc(project.Environment, func(o EnvironmentObject) bool { return o.Name == "Audio" })
+	if track < 0 {
+		t.Fatal("no environment object named after the region")
+	}
+
+	// Rewriting the decoded values must not disturb a byte.
+	if err := project.SetAudioFile(0, file); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SetAudioRegion(0, region); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SetEnvironmentName(track, "Audio"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := project.MarshalBinary(); !slices.Equal(got, data) {
+		t.Fatal("rewriting unchanged values changed the file")
+	}
+
+	file = AudioFile{Name: "Hole In Your Soul.wav", Dir: "Audio Files", Size: 1234, Format: "WAVE",
+		Frames: 9750216, SampleRate: 48000, Channels: 1, BitDepth: 24}
+	region = AudioRegion{Name: "Hole In Your Soul", Frames: 9750216}
+	if err := project.SetAudioFile(0, file); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SetAudioRegion(0, region); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SetEnvironmentName(track, region.Name); err != nil {
+		t.Fatal(err)
+	}
+	written, err := project.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reread, err := ParseProjectData(written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reread.AudioFiles[0]; got.Name != file.Name || got.Dir != file.Dir || got.Size != file.Size ||
+		got.Frames != file.Frames || got.SampleRate != file.SampleRate || got.Channels != file.Channels ||
+		got.BitDepth != file.BitDepth {
+		t.Errorf("reread audio file = %+v", got)
+	}
+	if got := reread.AudioRegions[0]; got.Name != region.Name || got.Frames != region.Frames {
+		t.Errorf("reread audio region = %+v", got)
+	}
+	if got := reread.Environment[track].Name; got != region.Name {
+		t.Errorf("reread track name = %q", got)
+	}
+	// The region, the track and the two loop family archives.
+	if n := bytes.Count(written, []byte(region.Name)); n != 4 {
+		t.Errorf("new name written %d times, want 4", n)
 	}
 }

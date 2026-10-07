@@ -8,7 +8,7 @@ worked out from real projects: it decodes what has been figured out, skips
 what it does not recognise, and can be wrong or incomplete for projects,
 plug-ins or Logic versions it has not met. Read an exported score against the
 project before trusting it, and expect a Logic update to be able to break the
-parsing. Nothing here ever writes to a bundle, but keep backups of
+parsing. Nothing here ever writes to an existing bundle, but keep backups of
 irreplaceable projects anyway.
 
 ## MusicXML Bridge for Logic Pro
@@ -90,6 +90,19 @@ placement, right-edge cropping and loops are reconstructed, with looped notes,
 region chords, tempo curves, lyrics and score articulations expanded.
 Performance articulation-ID assignments stay in the raw chunks, undecoded.
 
+## New project from an audio file
+
+```sh
+go install github.com/loov/logicx/cmd/logicx-from-audio@latest
+logicx-from-audio song.mp3
+```
+
+creates `song.logicx` beside the file: one audio track named after it, playing
+it from the first bar, converted to WAVE with `afconvert` (so macOS only). `-o`
+names the project instead. The project is an embedded template, a file Logic
+imported into an empty project, with the file, its region and the track
+renamed — so tempo, key and the rest are the template's.
+
 ## Library
 
 ```go
@@ -107,6 +120,10 @@ Every plist value (binary ones without an extension included) and every raw
 Audio Units, MIDI sequences, score articulations, markers, tempo maps and
 key/time signatures. `ParseProjectData` and `ParseMetadata` take bytes, for a
 boundary that touches no files.
+
+`ProjectData.MarshalBinary` writes the chunks back, byte for byte when nothing
+changed. Audio files, audio regions and environment object names can be
+rewritten with `SetAudioFile`, `SetAudioRegion` and `SetEnvironmentName`.
 
 ---
 

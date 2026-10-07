@@ -22,6 +22,9 @@ type ProjectData struct {
 	TimeSignatures []TimeSignatureChange
 	KeySignatures  []KeySignatureChange
 	ProjectChords  []Chord
+	AudioFiles     []AudioFile
+	AudioRegions   []AudioRegion
+	Environment    []EnvironmentObject
 }
 
 // chunkHeaderSize is the size of the header preceding every chunk's payload.
@@ -50,6 +53,8 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 		TempoChanges:   findTempoChanges(chunks),
 		TimeSignatures: findTimeSignatureChanges(chunks), KeySignatures: findKeySignatureChanges(chunks),
 		ProjectChords: findProjectChords(chunks),
+		AudioFiles:    findAudioFiles(chunks), AudioRegions: findAudioRegions(chunks),
+		Environment: findEnvironment(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
 	return p, nil
@@ -82,6 +87,27 @@ func parseChunks(data []byte) ([]Chunk, error) {
 	}
 	return chunks, nil
 }
+
+// AppendBinary appends the ProjectData file for p's Header and Chunks to b.
+// Only the size fields are recomputed — the file header's byte count of
+// everything after it, and each chunk header's payload size — so an
+// unmodified parse writes back byte for byte. The decoded records are not
+// consulted; change a project by changing its chunks.
+func (p *ProjectData) AppendBinary(b []byte) ([]byte, error) {
+	start := len(b)
+	b = append(b, p.Header[:]...)
+	for _, c := range p.Chunks {
+		header := c.Header
+		binary.LittleEndian.PutUint64(header[28:36], uint64(len(c.Data)))
+		b = append(b, header[:]...)
+		b = append(b, c.Data...)
+	}
+	binary.LittleEndian.PutUint64(b[start+16:start+24], uint64(len(b)-start-24))
+	return b, nil
+}
+
+// MarshalBinary returns the ProjectData file for p; see [ProjectData.AppendBinary].
+func (p *ProjectData) MarshalBinary() ([]byte, error) { return p.AppendBinary(nil) }
 
 // printableRun matches a run of printable ASCII long enough to be a name.
 var printableRun = regexp.MustCompile(`[ -~]{4,}`)

@@ -2,8 +2,9 @@
 
 // Package logicx reads Logic Pro .logicx project bundles.
 //
-// ProjectData is an undocumented binary format. The parser is read-only and
-// may need updates when Logic changes the format.
+// ProjectData is an undocumented binary format. The parser may need updates
+// when Logic changes the format. Writing is limited to re-serializing the
+// chunks and rewriting the few records this package knows how to change.
 //
 // # Container
 //
