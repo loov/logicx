@@ -5,17 +5,17 @@ package logicx
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"unicode/utf16"
 
+	"github.com/loov/logicx/internal/record"
 	"howett.net/plist"
 )
 
 // AudioFile is one file in the project audio bin, an "AuFl" chunk.
 //
 // The chunk opens with the file name as a length-prefixed UTF-16 string and
-// every field after it sits at a fixed distance from the name's end.
+// every field after it sits at a fixed distance from the name's end; see
+// [AudioFile.fields].
 type AudioFile struct {
 	// Name is the file name within Dir.
 	Name string
@@ -34,7 +34,6 @@ type AudioFile struct {
 const (
 	audioFileChunk      = "AuFl"
 	audioFileNameLength = 8
-	audioFileName       = 10
 	// Offsets past the end of the name.
 	audioFileMarker     = 0
 	audioFileDir        = 138
@@ -51,18 +50,32 @@ const (
 	audioFileTail     = 578
 )
 
-// audioFileMarker4 follows the name in every audio file chunk.
-var audioFileMarker4 = []byte("LFUA")
+// fields is the layout of an audio file chunk. overview is written rather
+// than decoded: it is derived from the frame count.
+func (f *AudioFile) fields(overview *uint32) []record.Field {
+	return []record.Field{
+		record.UTF16(audioFileNameLength, &f.Name,
+			record.Len(audioFileTail),
+			record.Equal(audioFileMarker, []byte("LFUA")...),
+			record.CString(audioFileDir, audioFileDirSize, &f.Dir),
+			record.Uint32LE(audioFileSize, &f.Size),
+			record.Code4(audioFileFormat, &f.Format),
+			record.Uint32LE(audioFileFrames, &f.Frames),
+			record.Uint32LE(audioFileSampleRate, &f.SampleRate),
+			record.Uint16LE(audioFileChannels, &f.Channels),
+			record.Uint16LE(audioFileBitDepth, &f.BitDepth),
+			record.Uint32LE(audioFileOverview, overview),
+		),
+	}
+}
 
 // findAudioFiles decodes the audio bin in file order.
 func findAudioFiles(chunks []Chunk) []AudioFile {
 	var files []AudioFile
 	for i, chunk := range chunks {
-		if chunk.Type != audioFileChunk {
-			continue
-		}
-		file, ok := decodeAudioFile(chunk.Data)
-		if !ok {
+		var file AudioFile
+		var overview uint32
+		if chunk.Type != audioFileChunk || !record.Decode(chunk.Data, file.fields(&overview)...) {
 			continue
 		}
 		file.chunk = i
@@ -71,73 +84,19 @@ func findAudioFiles(chunks []Chunk) []AudioFile {
 	return files
 }
 
-func decodeAudioFile(d []byte) (AudioFile, bool) {
-	if len(d) < audioFileName {
-		return AudioFile{}, false
-	}
-	n := int(binary.LittleEndian.Uint16(d[audioFileNameLength:]))
-	end := audioFileName + 2*n
-	if len(d) != end+audioFileTail || !bytes.Equal(d[end+audioFileMarker:end+audioFileMarker+4], audioFileMarker4) {
-		return AudioFile{}, false
-	}
-	name := make([]uint16, n)
-	for i := range name {
-		name[i] = binary.LittleEndian.Uint16(d[audioFileName+2*i:])
-	}
-	t := d[end:]
-	dir, _, _ := bytes.Cut(t[audioFileDir:audioFileDir+audioFileDirSize], []byte{0})
-	return AudioFile{
-		Name:       string(utf16.Decode(name)),
-		Dir:        string(dir),
-		Size:       binary.LittleEndian.Uint32(t[audioFileSize:]),
-		Format:     reverse4(t[audioFileFormat:]),
-		Frames:     binary.LittleEndian.Uint32(t[audioFileFrames:]),
-		SampleRate: binary.LittleEndian.Uint32(t[audioFileSampleRate:]),
-		Channels:   binary.LittleEndian.Uint16(t[audioFileChannels:]),
-		BitDepth:   binary.LittleEndian.Uint16(t[audioFileBitDepth:]),
-	}, true
-}
-
 // SetAudioFile rewrites the i-th audio file's chunk with f's fields, keeping
 // the bytes this package does not decode.
 func (p *ProjectData) SetAudioFile(i int, f AudioFile) error {
 	if i < 0 || i >= len(p.AudioFiles) {
 		return fmt.Errorf("logicx: no audio file %d", i)
 	}
-	if len(f.Dir) >= audioFileDirSize {
-		return fmt.Errorf("logicx: audio file folder longer than %d bytes", audioFileDirSize-1)
-	}
-	if len(f.Format) != 4 {
-		return fmt.Errorf("logicx: audio file format %q is not four characters", f.Format)
-	}
 	chunk := &p.Chunks[p.AudioFiles[i].chunk]
-	old := chunk.Data
-	oldEnd := audioFileName + 2*int(binary.LittleEndian.Uint16(old[audioFileNameLength:]))
-
-	name := utf16.Encode([]rune(f.Name))
-	if len(name) > 0xffff {
-		return errors.New("logicx: audio file name too long")
+	overview := (f.Frames+127)/128 + 8
+	data, err := record.Encode(chunk.Data, f.fields(&overview)...)
+	if err != nil {
+		return fmt.Errorf("logicx: audio file %d: %w", i, err)
 	}
-	d := make([]byte, 0, audioFileName+2*len(name)+audioFileTail)
-	d = append(d, old[:audioFileNameLength]...)
-	d = binary.LittleEndian.AppendUint16(d, uint16(len(name)))
-	for _, c := range name {
-		d = binary.LittleEndian.AppendUint16(d, c)
-	}
-	d = append(d, old[oldEnd:]...)
-
-	t := d[audioFileName+2*len(name):]
-	clear(t[audioFileDir : audioFileDir+audioFileDirSize])
-	copy(t[audioFileDir:], f.Dir)
-	binary.LittleEndian.PutUint32(t[audioFileSize:], f.Size)
-	copy(t[audioFileFormat:], []byte{f.Format[3], f.Format[2], f.Format[1], f.Format[0]})
-	binary.LittleEndian.PutUint32(t[audioFileFrames:], f.Frames)
-	binary.LittleEndian.PutUint32(t[audioFileSampleRate:], f.SampleRate)
-	binary.LittleEndian.PutUint16(t[audioFileChannels:], f.Channels)
-	binary.LittleEndian.PutUint16(t[audioFileBitDepth:], f.BitDepth)
-	binary.LittleEndian.PutUint32(t[audioFileOverview:], (f.Frames+127)/128+8)
-
-	chunk.Data = d
+	chunk.Data = data
 	f.chunk = p.AudioFiles[i].chunk
 	p.AudioFiles[i] = f
 	return nil
@@ -156,32 +115,29 @@ const (
 	audioRegionChunk      = "AuRg"
 	audioRegionFrames     = 22
 	audioRegionNameLength = 74
-	audioRegionName       = 76
 	// audioRegionTail is everything after the name: padding, the region's
 	// UUID and trailing fields.
 	audioRegionTail = 134
 )
 
+// fields is the layout of an audio region chunk.
+func (r *AudioRegion) fields() []record.Field {
+	return []record.Field{
+		record.Uint32LE(audioRegionFrames, &r.Frames),
+		record.String16(audioRegionNameLength, &r.Name, record.Len(audioRegionTail)),
+	}
+}
+
 // findAudioRegions decodes the audio regions in file order.
 func findAudioRegions(chunks []Chunk) []AudioRegion {
 	var regions []AudioRegion
 	for i, chunk := range chunks {
-		if chunk.Type != audioRegionChunk {
+		var region AudioRegion
+		if chunk.Type != audioRegionChunk || !record.Decode(chunk.Data, region.fields()...) {
 			continue
 		}
-		d := chunk.Data
-		if len(d) < audioRegionName {
-			continue
-		}
-		n := int(binary.LittleEndian.Uint16(d[audioRegionNameLength:]))
-		if len(d) != audioRegionName+n+audioRegionTail {
-			continue
-		}
-		regions = append(regions, AudioRegion{
-			Name:   string(d[audioRegionName : audioRegionName+n]),
-			Frames: binary.LittleEndian.Uint32(d[audioRegionFrames:]),
-			chunk:  i,
-		})
+		region.chunk = i
+		regions = append(regions, region)
 	}
 	return regions
 }
@@ -193,19 +149,13 @@ func (p *ProjectData) SetAudioRegion(i int, r AudioRegion) error {
 	if i < 0 || i >= len(p.AudioRegions) {
 		return fmt.Errorf("logicx: no audio region %d", i)
 	}
-	if len(r.Name) > 0xffff {
-		return errors.New("logicx: audio region name too long")
-	}
 	prev := p.AudioRegions[i]
 	chunk := &p.Chunks[prev.chunk]
-	old := chunk.Data
-	d := make([]byte, 0, audioRegionName+len(r.Name)+audioRegionTail)
-	d = append(d, old[:audioRegionNameLength]...)
-	d = binary.LittleEndian.AppendUint16(d, uint16(len(r.Name)))
-	d = append(d, r.Name...)
-	d = append(d, old[audioRegionName+len(prev.Name):]...)
-	binary.LittleEndian.PutUint32(d[audioRegionFrames:], r.Frames)
-	chunk.Data = d
+	data, err := record.Encode(chunk.Data, r.fields()...)
+	if err != nil {
+		return fmt.Errorf("logicx: audio region %d: %w", i, err)
+	}
+	chunk.Data = data
 
 	if r.Name != prev.Name {
 		for j := range p.Chunks {
@@ -283,23 +233,23 @@ type EnvironmentObject struct {
 const (
 	environmentChunk      = "Envi"
 	environmentNameLength = 158
-	environmentName       = 160
 )
+
+// fields is the layout of an environment chunk.
+func (o *EnvironmentObject) fields() []record.Field {
+	return []record.Field{record.String16(environmentNameLength, &o.Name)}
+}
 
 // findEnvironment decodes the environment objects in file order.
 func findEnvironment(chunks []Chunk) []EnvironmentObject {
 	var objects []EnvironmentObject
 	for i, chunk := range chunks {
-		if chunk.Type != environmentChunk || len(chunk.Data) < environmentName {
+		var object EnvironmentObject
+		if chunk.Type != environmentChunk || !record.Decode(chunk.Data, object.fields()...) {
 			continue
 		}
-		n := int(binary.LittleEndian.Uint16(chunk.Data[environmentNameLength:]))
-		if environmentName+n > len(chunk.Data) {
-			continue
-		}
-		objects = append(objects, EnvironmentObject{
-			Name: string(chunk.Data[environmentName : environmentName+n]), chunk: i,
-		})
+		object.chunk = i
+		objects = append(objects, object)
 	}
 	return objects
 }
@@ -309,18 +259,14 @@ func (p *ProjectData) SetEnvironmentName(i int, name string) error {
 	if i < 0 || i >= len(p.Environment) {
 		return fmt.Errorf("logicx: no environment object %d", i)
 	}
-	if len(name) > 0xffff {
-		return errors.New("logicx: environment object name too long")
+	object := p.Environment[i]
+	object.Name = name
+	chunk := &p.Chunks[object.chunk]
+	data, err := record.Encode(chunk.Data, object.fields()...)
+	if err != nil {
+		return fmt.Errorf("logicx: environment object %d: %w", i, err)
 	}
-	prev := p.Environment[i]
-	chunk := &p.Chunks[prev.chunk]
-	old := chunk.Data
-	d := make([]byte, 0, len(old)-len(prev.Name)+len(name))
-	d = append(d, old[:environmentNameLength]...)
-	d = binary.LittleEndian.AppendUint16(d, uint16(len(name)))
-	d = append(d, name...)
-	d = append(d, old[environmentName+len(prev.Name):]...)
-	chunk.Data = d
-	p.Environment[i].Name = name
+	chunk.Data = data
+	p.Environment[i] = object
 	return nil
 }
