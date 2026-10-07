@@ -5,6 +5,7 @@ package logicx
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/loov/logicx/internal/record"
@@ -28,7 +29,7 @@ type AudioFile struct {
 	SampleRate uint32
 	Channels   uint16
 	BitDepth   uint16
-	chunk      int
+	chunk      *Chunk
 }
 
 const (
@@ -70,45 +71,45 @@ func (f *AudioFile) fields(overview *uint32) []record.Field {
 }
 
 // findAudioFiles decodes the audio bin in file order.
-func findAudioFiles(chunks []Chunk) []AudioFile {
+func findAudioFiles(chunks []*Chunk) []AudioFile {
 	var files []AudioFile
-	for i, chunk := range chunks {
+	for _, chunk := range chunks {
 		var file AudioFile
 		var overview uint32
 		if chunk.Type != audioFileChunk || !record.Decode(chunk.Data, file.fields(&overview)...) {
 			continue
 		}
-		file.chunk = i
+		file.chunk = chunk
 		files = append(files, file)
 	}
 	return files
 }
 
-// SetAudioFile rewrites the i-th audio file's chunk with f's fields, keeping
-// the bytes this package does not decode.
-func (p *ProjectData) SetAudioFile(i int, f AudioFile) error {
-	if i < 0 || i >= len(p.AudioFiles) {
-		return fmt.Errorf("logicx: no audio file %d", i)
+// Save writes f's fields into the chunk it was decoded from, keeping the
+// bytes this package does not decode. ProjectData.AudioFiles is not updated.
+func (f *AudioFile) Save() error {
+	if f.chunk == nil {
+		return errors.New("logicx: audio file was not decoded from a project")
 	}
-	chunk := &p.Chunks[p.AudioFiles[i].chunk]
 	overview := (f.Frames+127)/128 + 8
-	data, err := record.Encode(chunk.Data, f.fields(&overview)...)
+	data, err := record.Encode(f.chunk.Data, f.fields(&overview)...)
 	if err != nil {
-		return fmt.Errorf("logicx: audio file %d: %w", i, err)
+		return fmt.Errorf("logicx: audio file %q: %w", f.Name, err)
 	}
-	chunk.Data = data
-	f.chunk = p.AudioFiles[i].chunk
-	p.AudioFiles[i] = f
+	f.chunk.Data = data
 	return nil
 }
 
 // AudioRegion is one region of an audio file, an "AuRg" chunk. Where it sits
 // in the arrangement is an event in a track's sequence, which carries neither
 // its length nor its name.
+//
+// Apple Loops family archives elsewhere in the project carry the region's
+// name too; a renamed region needs [ProjectData.RenameLoops] as well.
 type AudioRegion struct {
 	Name   string
 	Frames uint32
-	chunk  int
+	chunk  *Chunk
 }
 
 const (
@@ -129,49 +130,49 @@ func (r *AudioRegion) fields() []record.Field {
 }
 
 // findAudioRegions decodes the audio regions in file order.
-func findAudioRegions(chunks []Chunk) []AudioRegion {
+func findAudioRegions(chunks []*Chunk) []AudioRegion {
 	var regions []AudioRegion
-	for i, chunk := range chunks {
+	for _, chunk := range chunks {
 		var region AudioRegion
 		if chunk.Type != audioRegionChunk || !record.Decode(chunk.Data, region.fields()...) {
 			continue
 		}
-		region.chunk = i
+		region.chunk = chunk
 		regions = append(regions, region)
 	}
 	return regions
 }
 
-// SetAudioRegion rewrites the i-th audio region's chunk with r's fields,
-// keeping the bytes this package does not decode. A renamed region also
-// renames the Apple Loops family archives that carry its old name.
-func (p *ProjectData) SetAudioRegion(i int, r AudioRegion) error {
-	if i < 0 || i >= len(p.AudioRegions) {
-		return fmt.Errorf("logicx: no audio region %d", i)
+// Save writes r's fields into the chunk it was decoded from, keeping the bytes
+// this package does not decode. ProjectData.AudioRegions is not updated.
+func (r *AudioRegion) Save() error {
+	if r.chunk == nil {
+		return errors.New("logicx: audio region was not decoded from a project")
 	}
-	prev := p.AudioRegions[i]
-	chunk := &p.Chunks[prev.chunk]
-	data, err := record.Encode(chunk.Data, r.fields()...)
+	data, err := record.Encode(r.chunk.Data, r.fields()...)
 	if err != nil {
-		return fmt.Errorf("logicx: audio region %d: %w", i, err)
+		return fmt.Errorf("logicx: audio region %q: %w", r.Name, err)
 	}
-	chunk.Data = data
+	r.chunk.Data = data
+	return nil
+}
 
-	if r.Name != prev.Name {
-		for j := range p.Chunks {
-			c := &p.Chunks[j]
-			if c.Type != "SngO" && c.Type != "GenM" {
-				continue
-			}
-			data, err := renameLoop(c.Data, prev.Name, r.Name)
-			if err != nil {
-				return fmt.Errorf("logicx: rename loop in %s chunk %d: %w", c.Type, j, err)
-			}
-			c.Data = data
-		}
+// RenameLoops replaces the loop name old with name in the Apple Loops family
+// archives, which carry the name of the audio region they were made from.
+func (p *ProjectData) RenameLoops(old, name string) error {
+	if old == name {
+		return nil
 	}
-	r.chunk = prev.chunk
-	p.AudioRegions[i] = r
+	for i, c := range p.Chunks {
+		if c.Type != "SngO" && c.Type != "GenM" {
+			continue
+		}
+		data, err := renameLoop(c.Data, old, name)
+		if err != nil {
+			return fmt.Errorf("logicx: rename loop in %s chunk %d: %w", c.Type, i, err)
+		}
+		c.Data = data
+	}
 	return nil
 }
 
@@ -227,7 +228,7 @@ func renameLoop(d []byte, old, name string) ([]byte, error) {
 // a track, channel strip, click or input. Only its name is decoded.
 type EnvironmentObject struct {
 	Name  string
-	chunk int
+	chunk *Chunk
 }
 
 const (
@@ -241,32 +242,29 @@ func (o *EnvironmentObject) fields() []record.Field {
 }
 
 // findEnvironment decodes the environment objects in file order.
-func findEnvironment(chunks []Chunk) []EnvironmentObject {
+func findEnvironment(chunks []*Chunk) []EnvironmentObject {
 	var objects []EnvironmentObject
-	for i, chunk := range chunks {
+	for _, chunk := range chunks {
 		var object EnvironmentObject
 		if chunk.Type != environmentChunk || !record.Decode(chunk.Data, object.fields()...) {
 			continue
 		}
-		object.chunk = i
+		object.chunk = chunk
 		objects = append(objects, object)
 	}
 	return objects
 }
 
-// SetEnvironmentName renames the i-th environment object.
-func (p *ProjectData) SetEnvironmentName(i int, name string) error {
-	if i < 0 || i >= len(p.Environment) {
-		return fmt.Errorf("logicx: no environment object %d", i)
+// Save writes o's fields into the chunk it was decoded from, keeping the bytes
+// this package does not decode. ProjectData.Environment is not updated.
+func (o *EnvironmentObject) Save() error {
+	if o.chunk == nil {
+		return errors.New("logicx: environment object was not decoded from a project")
 	}
-	object := p.Environment[i]
-	object.Name = name
-	chunk := &p.Chunks[object.chunk]
-	data, err := record.Encode(chunk.Data, object.fields()...)
+	data, err := record.Encode(o.chunk.Data, o.fields()...)
 	if err != nil {
-		return fmt.Errorf("logicx: environment object %d: %w", i, err)
+		return fmt.Errorf("logicx: environment object %q: %w", o.Name, err)
 	}
-	chunk.Data = data
-	p.Environment[i] = object
+	o.chunk.Data = data
 	return nil
 }

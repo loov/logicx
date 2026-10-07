@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
 	"regexp"
 	"slices"
@@ -187,6 +189,7 @@ type Marker struct {
 	Name     string
 	RTF      string
 	Raw      [48]byte
+	event    *Event
 }
 
 // sequenceSource is a decoded event sequence before arrangement links place
@@ -204,9 +207,9 @@ type sequenceSource struct {
 // findMIDISequences pairs event sequences with their descriptors, then places
 // each source on the timeline through the arrangement links that reference it.
 // A source referenced by several links becomes several sequences.
-func findMIDISequences(chunks []Chunk) []MIDISequence {
-	descriptors := make(map[chordSequenceID]Chunk)
-	events := make(map[chordSequenceID]Chunk)
+func findMIDISequences(chunks []*Chunk) []MIDISequence {
+	descriptors := make(map[chordSequenceID]*Chunk)
+	events := make(map[chordSequenceID]*Chunk)
 	for _, chunk := range chunks {
 		id := chunkSequenceID(chunk)
 		switch chunk.Type {
@@ -228,7 +231,7 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		if !ok {
 			continue
 		}
-		events := splitEvents(chunk.Data)
+		events := chunk.Events
 		notes := findMIDINotes(events)
 		chords := decodeChordEvents(events)
 		if len(notes) == 0 && len(chords) == 0 {
@@ -255,7 +258,7 @@ func findMIDISequences(chunks []Chunk) []MIDISequence {
 		if !ok || sequenceName(descriptor.Data) == "Global Harmonies" {
 			continue
 		}
-		for _, link := range decodeRegionLinks(splitEvents(event.Data)) {
+		for _, link := range decodeRegionLinks(event.Events) {
 			s, ok := sources[chordSequenceID{group: id.group, sequence: link.sequence}]
 			if !ok {
 				continue
@@ -319,7 +322,7 @@ type regionLink struct {
 }
 
 // decodeRegionLinks decodes the arrangement locators of one sequence.
-func decodeRegionLinks(events []Event) []regionLink {
+func decodeRegionLinks(events []*Event) []regionLink {
 	var links []regionLink
 	for _, event := range events {
 		if event.Type != eventLink {
@@ -410,7 +413,7 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 // symbols attached to them. Lyrics, ornaments and arpeggios are separate
 // records preceding the note they belong to; articulations, fermatas and slur
 // segments are extra atoms of the note record itself.
-func findMIDINotes(events []Event) []MIDINote {
+func findMIDINotes(events []*Event) []MIDINote {
 	var notes []MIDINote
 	var lyrics []Lyric
 	var ornaments []ScoreOrnament
@@ -734,7 +737,7 @@ func sequenceName(data []byte) string {
 
 // findMarkers decodes global markers and resolves their text, sorted by
 // position.
-func findMarkers(chunks []Chunk) []Marker {
+func findMarkers(chunks []*Chunk) []Marker {
 	texts := make(map[uint32]string)
 	for _, chunk := range chunks {
 		if chunk.Type == "TxSq" {
@@ -745,11 +748,12 @@ func findMarkers(chunks []Chunk) []Marker {
 
 	var markers []Marker
 	decode := markerDecoder(texts)
-	sequenceEvents(chunks, func(_ Chunk, event Event) {
+	sequenceEvents(chunks, func(_ *Chunk, event *Event) {
 		if event.Type != eventMarker {
 			return
 		}
 		if marker, ok := decode(event.Data); ok {
+			marker.event = event
 			markers = append(markers, marker)
 		}
 	})
@@ -762,14 +766,7 @@ func findMarkers(chunks []Chunk) []Marker {
 func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
 	return func(data []byte) (Marker, bool) {
 		var marker Marker
-		if !record.Decode(data,
-			record.Equal(0, 0x12, 0, 0, 0),
-			record.Uint32LE(4, &marker.Position),
-			record.Uint32LE(16, &marker.TextID),
-			record.Equal(20, 0, 0, 0, 0x88),
-			record.Uint32LE(28, &marker.Length),
-			record.Copy(0, marker.Raw[:]),
-		) {
+		if !record.Decode(data, append(marker.fields(), record.Copy(0, marker.Raw[:]))...) {
 			return Marker{}, false
 		}
 		rtf, ok := texts[marker.TextID]
@@ -779,6 +776,34 @@ func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
 		marker.Name, marker.RTF = plainRTF(rtf), rtf
 		return marker, true
 	}
+}
+
+// fields is the layout of a marker record.
+func (m *Marker) fields() []record.Field {
+	return []record.Field{
+		record.Equal(0, 0x12, 0, 0, 0),
+		record.Uint32LE(4, &m.Position),
+		record.Uint32LE(16, &m.TextID),
+		record.Equal(20, 0, 0, 0, 0x88),
+		record.Uint32LE(28, &m.Length),
+	}
+}
+
+// Save writes m's position, length and text reference into the record it was
+// decoded from, keeping the bytes this package does not decode. The text is
+// held in a separate chunk, so Name and RTF are not written.
+// ProjectData.Markers is not updated.
+func (m *Marker) Save() error {
+	if m.event == nil {
+		return errors.New("logicx: marker was not decoded from a project")
+	}
+	data, err := record.Encode(m.event.Data, m.fields()...)
+	if err != nil {
+		return fmt.Errorf("logicx: marker: %w", err)
+	}
+	m.event.Data = data
+	copy(m.Raw[:], data)
+	return nil
 }
 
 // markerRTF extracts the RTF payload of a TxSq chunk.

@@ -43,7 +43,7 @@ const projectChordPositionBias = 4 * 960
 type chordSequenceID struct{ group, sequence uint32 }
 
 // chunkSequenceID reads a chunk's sequence identity from its header.
-func chunkSequenceID(chunk Chunk) chordSequenceID {
+func chunkSequenceID(chunk *Chunk) chordSequenceID {
 	return chordSequenceID{
 		group:    binary.LittleEndian.Uint32(chunk.Header[6:10]),
 		sequence: binary.LittleEndian.Uint32(chunk.Header[10:14]),
@@ -59,14 +59,14 @@ type chordLink struct {
 
 // findProjectChords decodes the global chord track: every "Global Harmonies"
 // sequence links to child sequences that hold one chord event each.
-func findProjectChords(chunks []Chunk) []Chord {
-	events := make(map[chordSequenceID][]Event)
+func findProjectChords(chunks []*Chunk) []Chord {
+	events := make(map[chordSequenceID][]*Event)
 	durations := make(map[chordSequenceID]uint32)
 	for _, chunk := range chunks {
 		id := chunkSequenceID(chunk)
 		switch {
 		case chunk.Type == "EvSq":
-			events[id] = splitEvents(chunk.Data)
+			events[id] = chunk.Events
 		case chunk.Type == "MSeq" && sequenceName(chunk.Data) == "MIDI Region":
 			durations[id] = sequenceDuration(chunk.Data)
 		}
@@ -136,7 +136,7 @@ func inferChordDurationsUntil(chords []Chord, end uint32) {
 }
 
 // decodeChordLinks decodes the locators of the global harmony track.
-func decodeChordLinks(events []Event) []chordLink {
+func decodeChordLinks(events []*Event) []chordLink {
 	var links []chordLink
 	for _, event := range events {
 		if event.Type != eventLink {
@@ -150,7 +150,7 @@ func decodeChordLinks(events []Event) []chordLink {
 }
 
 // decodeChordEvents decodes the chord and scale events of one sequence.
-func decodeChordEvents(events []Event) []Chord {
+func decodeChordEvents(events []*Event) []Chord {
 	var chords []Chord
 	for _, event := range events {
 		if event.Type != eventScore {

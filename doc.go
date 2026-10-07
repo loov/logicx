@@ -3,8 +3,18 @@
 // Package logicx reads Logic Pro .logicx project bundles.
 //
 // ProjectData is an undocumented binary format. The parser may need updates
-// when Logic changes the format. Writing is limited to re-serializing the
-// chunks and rewriting the few records this package knows how to change.
+// when Logic changes the format.
+//
+// # Writing
+//
+// [ProjectData.Chunks] is the whole file as a tree: chunks, and for event
+// sequences the events within them. [ProjectData.MarshalBinary] writes the
+// tree back, recomputing only its size fields, so an unmodified parse writes
+// back byte for byte. Decoded values point at the node they came from, and
+// those with a Save method write their fields back into it, leaving every
+// byte this package does not decode untouched. Values whose positions are
+// computed — placed or looped notes, project chords, signatures moved onto
+// bar 1 — have no Save.
 //
 // # Container
 //
@@ -12,7 +22,8 @@
 // 36-byte header — a reversed four-character type, a group and sequence number
 // identifying which sequence it belongs to, and a payload size — followed by
 // its payload. Every chunk is preserved in [ProjectData.Chunks], including the
-// many types this package does not decode.
+// many types this package does not decode; see [Chunk] for how the payload is
+// held.
 //
 // Three chunk types carry most of what this package reads. "AuCO" holds one
 // channel strip per chunk, "AuCU" one plug-in instance, and "EvSq" an event

@@ -244,6 +244,22 @@ func TestParseProjectData_ParsesMarkers(t *testing.T) {
 	if marker.Position != 38_400 || marker.Length != 7_680 || marker.TextID != 4 || marker.Name != "Chorus" || marker.RTF == "" {
 		t.Fatalf("marker = %+v", marker)
 	}
+
+	marker.Position, marker.Length = 42_240, 3_840
+	if err := marker.Save(); err != nil {
+		t.Fatal(err)
+	}
+	written, err := project.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reread, err := ParseProjectData(written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reread.Markers[0]; got.Position != 42_240 || got.Length != 3_840 || got.Name != "Chorus" {
+		t.Fatalf("reread marker = %+v", got)
+	}
 }
 
 func TestParseProjectData_ProjectChordsMatchMarkerOracle(t *testing.T) {
@@ -484,8 +500,8 @@ func TestSplitEvents_UsesTheContinuationBit(t *testing.T) {
 	data = append(data, atom(0x00, 0x89)...)
 	data = append(data, atom(0xf1, 0x3f)...) // sentinel
 
-	events := splitEvents(data)
-	if len(events) != 3 {
+	events, ok := splitEvents(data)
+	if !ok || len(events) != 3 {
 		t.Fatalf("events = %+v", events)
 	}
 	want := []struct {
@@ -498,6 +514,13 @@ func TestSplitEvents_UsesTheContinuationBit(t *testing.T) {
 			t.Errorf("event[%d] = type %#x offset %d size %d, want %#x %d %d",
 				i, events[i].Type, events[i].Offset, len(events[i].Data), w.typ, w.offset, w.size)
 		}
+	}
+	// Bytes that belong to no record keep the payload from splitting at all.
+	if _, ok := splitEvents(data[16:]); ok {
+		t.Error("splitEvents() split a payload starting partway through a record")
+	}
+	if _, ok := splitEvents(data[:len(data)-1]); ok {
+		t.Error("splitEvents() split a payload of partial atoms")
 	}
 }
 
@@ -700,29 +723,31 @@ func TestParseProjectData_AudioFileRegionAndTrackRename(t *testing.T) {
 	}
 
 	// Rewriting the decoded values must not disturb a byte.
-	if err := project.SetAudioFile(0, file); err != nil {
+	if err := file.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if err := project.SetAudioRegion(0, region); err != nil {
+	if err := region.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if err := project.SetEnvironmentName(track, "Audio"); err != nil {
+	if err := project.Environment[track].Save(); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := project.MarshalBinary(); !slices.Equal(got, data) {
 		t.Fatal("rewriting unchanged values changed the file")
 	}
 
-	file = AudioFile{Name: "Hole In Your Soul.wav", Dir: "Audio Files", Size: 1234, Format: "WAVE",
-		Frames: 9750216, SampleRate: 48000, Channels: 1, BitDepth: 24}
-	region = AudioRegion{Name: "Hole In Your Soul", Frames: 9750216}
-	if err := project.SetAudioFile(0, file); err != nil {
-		t.Fatal(err)
+	file.Name, file.Dir, file.Size, file.Format = "Hole In Your Soul.wav", "Audio Files", 1234, "WAVE"
+	file.Frames, file.SampleRate, file.Channels, file.BitDepth = 9750216, 48000, 1, 24
+	oldName := region.Name
+	region.Name, region.Frames = "Hole In Your Soul", 9750216
+	object := project.Environment[track]
+	object.Name = region.Name
+	for _, save := range []func() error{file.Save, region.Save, object.Save} {
+		if err := save(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := project.SetAudioRegion(0, region); err != nil {
-		t.Fatal(err)
-	}
-	if err := project.SetEnvironmentName(track, region.Name); err != nil {
+	if err := project.RenameLoops(oldName, region.Name); err != nil {
 		t.Fatal(err)
 	}
 	written, err := project.MarshalBinary()
@@ -747,5 +772,50 @@ func TestParseProjectData_AudioFileRegionAndTrackRename(t *testing.T) {
 	// The region, the track and the two loop family archives.
 	if n := bytes.Count(written, []byte(region.Name)); n != 4 {
 		t.Errorf("new name written %d times, want 4", n)
+	}
+}
+
+func TestTempoChange_SaveWritesThroughTheTree(t *testing.T) {
+	data, err := os.ReadFile("testdata/tempo-map-steps.logicx/Alternatives/000/ProjectData")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := ParseProjectData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tempo := project.TempoChanges[1]
+	if err := tempo.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := project.MarshalBinary(); !slices.Equal(got, data) {
+		t.Fatal("saving an unchanged tempo changed the file")
+	}
+
+	tempo.BPM, tempo.Position = 97.5, 46_080+960
+	if err := tempo.Save(); err != nil {
+		t.Fatal(err)
+	}
+	written, err := project.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != len(data) {
+		t.Fatalf("wrote %d bytes, want %d", len(written), len(data))
+	}
+	reread, err := ParseProjectData(written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reread.TempoChanges[1]; got.BPM != 97.5 || got.Position != 47_040 {
+		t.Fatalf("reread tempo = %+v", got)
+	}
+	if got := reread.TempoChanges[2]; got.BPM != 140 {
+		t.Fatalf("neighbouring tempo = %+v", got)
+	}
+
+	tempo.BPM = 0
+	if err := tempo.Save(); err == nil {
+		t.Fatal("Save() accepted a tempo of 0 BPM")
 	}
 }

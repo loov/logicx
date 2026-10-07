@@ -4,6 +4,9 @@ package logicx
 
 import (
 	"cmp"
+	"errors"
+	"fmt"
+	"math"
 	"slices"
 
 	"github.com/loov/logicx/internal/record"
@@ -19,18 +22,20 @@ type TempoChange struct {
 	// control points encode?
 	Flags uint8
 	Raw   [32]byte
+	event *Event
 }
 
 // findTempoChanges collects the tempo map from every event sequence, sorted by
 // position. Logic keeps the map in a global sequence, so reading all of them
 // costs little and survives layout changes.
-func findTempoChanges(chunks []Chunk) []TempoChange {
+func findTempoChanges(chunks []*Chunk) []TempoChange {
 	var changes []TempoChange
-	sequenceEvents(chunks, func(_ Chunk, event Event) {
+	sequenceEvents(chunks, func(_ *Chunk, event *Event) {
 		if event.Type != eventTempo {
 			return
 		}
 		if change, ok := decodeTempoChange(event.Data); ok {
+			change.event = event
 			changes = append(changes, change)
 		}
 	})
@@ -40,25 +45,53 @@ func findTempoChanges(chunks []Chunk) []TempoChange {
 	return changes
 }
 
-// decodeTempoChange decodes a tempo record. The BPM field is stored as
-// beats per minute scaled by 10000; implausible values reject the record,
-// because the caller scans unaligned data.
+// fields is the layout of a tempo record. The BPM field is stored as beats
+// per minute scaled by 10000, which value holds.
+func (c *TempoChange) fields(value *uint32) []record.Field {
+	return []record.Field{
+		record.Equal(0, 0x60, 0),
+		record.Uint16LE(2, &c.PositionFraction),
+		record.Uint32LE(4, &c.Position),
+		record.Equal(12, 0x7f, 0, 0),
+		record.Uint8(15, &c.Flags),
+		record.Uint32LE(16, value),
+		record.Equal(23, 0x88),
+	}
+}
+
+// maxTempoValue is the largest scaled BPM accepted, 1000 BPM.
+const maxTempoValue = 10_000_000
+
+// decodeTempoChange decodes a tempo record. Implausible values reject the
+// record.
 func decodeTempoChange(data []byte) (TempoChange, bool) {
 	var change TempoChange
 	var value uint32
-	ok := record.Decode(data,
-		record.Equal(0, 0x60, 0),
-		record.Uint16LE(2, &change.PositionFraction),
-		record.Uint32LE(4, &change.Position),
-		record.Equal(12, 0x7f, 0, 0),
-		record.Uint8(15, &change.Flags),
-		record.Uint32LE(16, &value),
-		record.Equal(23, 0x88),
-		record.Copy(0, change.Raw[:]),
-	)
-	if !ok || value == 0 || value > 10_000_000 || change.Flags&^byte(0xc0) != 0 {
+	if !record.Decode(data, append(change.fields(&value), record.Copy(0, change.Raw[:]))...) ||
+		value == 0 || value > maxTempoValue || change.Flags&^byte(0xc0) != 0 {
 		return TempoChange{}, false
 	}
 	change.BPM = float64(value) / 10_000
 	return change, true
+}
+
+// Save writes c's fields into the record it was decoded from, keeping the
+// bytes this package does not decode. ProjectData.TempoChanges is not
+// updated.
+func (c *TempoChange) Save() error {
+	if c.event == nil {
+		return errors.New("logicx: tempo change was not decoded from a project")
+	}
+	value := math.Round(c.BPM * 10_000)
+	if !(value >= 1 && value <= maxTempoValue) {
+		return fmt.Errorf("logicx: tempo %v BPM out of range", c.BPM)
+	}
+	scaled := uint32(value)
+	data, err := record.Encode(c.event.Data, c.fields(&scaled)...)
+	if err != nil {
+		return fmt.Errorf("logicx: tempo change: %w", err)
+	}
+	c.event.Data = data
+	copy(c.Raw[:], data)
+	return nil
 }

@@ -106,7 +106,7 @@ const (
 )
 
 // findAudioUnits decodes one plug-in instance per chunk, in file order.
-func findAudioUnits(chunks []Chunk) []AudioUnit {
+func findAudioUnits(chunks []*Chunk) []AudioUnit {
 	var found []AudioUnit
 	for _, chunk := range chunks {
 		if chunk.Type != pluginChunk || !bytes.Equal(chunk.Header[4:8], pluginVariant) ||
@@ -176,7 +176,7 @@ var channelStripVariant = []byte{0x07, 0x00, 0x0e, 0x00}
 // byte, a name padded to 16 bytes, and an 8-byte descriptor. Chunks are in
 // file order, so the result is ordered by offset, which assignAudioUnits
 // relies on.
-func findTracks(chunks []Chunk) []Track {
+func findTracks(chunks []*Chunk) []Track {
 	var tracks []Track
 	for _, chunk := range chunks {
 		if chunk.Type != channelStripChunk ||

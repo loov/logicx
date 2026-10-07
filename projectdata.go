@@ -13,7 +13,7 @@ import (
 // ProjectData contains both lossless chunks and decoded records.
 type ProjectData struct {
 	Header         [24]byte
-	Chunks         []Chunk
+	Chunks         []*Chunk
 	AudioUnits     []AudioUnit
 	Tracks         []Track
 	Sequences      []MIDISequence
@@ -31,12 +31,31 @@ type ProjectData struct {
 const chunkHeaderSize = 36
 
 // Chunk is one lossless ProjectData record. Its semantics are undocumented;
-// Header and Data preserve fields not decoded by this package.
+// Header and the payload preserve fields not decoded by this package.
+//
+// The payload is held in exactly one of Data and Events. An event sequence
+// ("EvSq") is split into Events, so that records can be changed and resized
+// on their own; every other chunk keeps its payload as Data. Offset is where
+// the chunk began in the file as parsed; edits do not update it.
 type Chunk struct {
 	Type   string
 	Offset int
 	Header [36]byte
 	Data   []byte
+	Events []*Event
+}
+
+// Payload returns the chunk's payload bytes, joining Events when the payload
+// is held as events.
+func (c *Chunk) Payload() []byte {
+	if c.Events == nil {
+		return c.Data
+	}
+	var b []byte
+	for _, event := range c.Events {
+		b = append(b, event.Data...)
+	}
+	return b
 }
 
 // ParseProjectData parses bytes without opening or modifying any file.
@@ -62,11 +81,11 @@ func ParseProjectData(data []byte) (ProjectData, error) {
 
 // parseChunks splits ProjectData into its chunk records. Every chunk is
 // retained, including types this package does not decode.
-func parseChunks(data []byte) ([]Chunk, error) {
+func parseChunks(data []byte) ([]*Chunk, error) {
 	if len(data) < 24 || !bytes.Equal(data[:4], []byte{0x23, 0x47, 0xc0, 0xab}) {
 		return nil, errors.New("logicx: invalid ProjectData header")
 	}
-	var chunks []Chunk
+	var chunks []*Chunk
 	for offset := 24; offset < len(data); {
 		if len(data)-offset < 36 {
 			return nil, fmt.Errorf("logicx: truncated chunk header at offset %d", offset)
@@ -79,10 +98,18 @@ func parseChunks(data []byte) ([]Chunk, error) {
 		var rawHeader [chunkHeaderSize]byte
 		copy(rawHeader[:], header)
 		end := offset + chunkHeaderSize + int(size)
-		chunks = append(chunks, Chunk{
+		chunk := &Chunk{
 			Type: reverse4(header[:4]), Offset: offset, Header: rawHeader,
 			Data: bytes.Clone(data[offset+chunkHeaderSize : end]),
-		})
+		}
+		// A payload that does not split exactly stays opaque, so that no byte
+		// falls outside the tree.
+		if chunk.Type == "EvSq" {
+			if events, ok := splitEvents(chunk.Data); ok {
+				chunk.Data, chunk.Events = nil, events
+			}
+		}
+		chunks = append(chunks, chunk)
 		offset = end
 	}
 	return chunks, nil
@@ -91,16 +118,21 @@ func parseChunks(data []byte) ([]Chunk, error) {
 // AppendBinary appends the ProjectData file for p's Header and Chunks to b.
 // Only the size fields are recomputed — the file header's byte count of
 // everything after it, and each chunk header's payload size — so an
-// unmodified parse writes back byte for byte. The decoded records are not
-// consulted; change a project by changing its chunks.
+// unmodified parse writes back byte for byte. Decoded records are written
+// through their Save methods, which change the chunks they came from.
 func (p *ProjectData) AppendBinary(b []byte) ([]byte, error) {
 	start := len(b)
 	b = append(b, p.Header[:]...)
 	for _, c := range p.Chunks {
-		header := c.Header
-		binary.LittleEndian.PutUint64(header[28:36], uint64(len(c.Data)))
-		b = append(b, header[:]...)
-		b = append(b, c.Data...)
+		at := len(b)
+		b = append(b, c.Header[:]...)
+		if c.Events == nil {
+			b = append(b, c.Data...)
+		}
+		for _, event := range c.Events {
+			b = append(b, event.Data...)
+		}
+		binary.LittleEndian.PutUint64(b[at+28:at+36], uint64(len(b)-at-chunkHeaderSize))
 	}
 	binary.LittleEndian.PutUint64(b[start+16:start+24], uint64(len(b)-start-24))
 	return b, nil

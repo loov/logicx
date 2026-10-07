@@ -111,19 +111,25 @@ func build(dir, audio, project string) error {
 	file := p.AudioFiles[0]
 	file.Name, file.Dir, file.Size = wavName, "Audio Files", info.size
 	file.Frames, file.SampleRate, file.Channels, file.BitDepth = info.frames, info.sampleRate, info.channels, info.bitDepth
-	if err := p.SetAudioFile(0, file); err != nil {
+	if err := file.Save(); err != nil {
 		return err
 	}
 	// Logic names the track after the file it was created for.
-	oldName := p.AudioRegions[0].Name
-	for i, o := range p.Environment {
+	region := p.AudioRegions[0]
+	oldName := region.Name
+	for _, o := range p.Environment {
 		if o.Name == oldName {
-			if err := p.SetEnvironmentName(i, name); err != nil {
+			o.Name = name
+			if err := o.Save(); err != nil {
 				return err
 			}
 		}
 	}
-	if err := p.SetAudioRegion(0, logicx.AudioRegion{Name: name, Frames: info.frames}); err != nil {
+	region.Name, region.Frames = name, info.frames
+	if err := region.Save(); err != nil {
+		return err
+	}
+	if err := p.RenameLoops(oldName, name); err != nil {
 		return err
 	}
 	data, err = p.MarshalBinary()
