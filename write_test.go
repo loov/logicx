@@ -610,3 +610,28 @@ func FuzzProjectData(f *testing.F) {
 		}
 	})
 }
+
+func TestRenameSequence_KeepsTheTailEvenlyAligned(t *testing.T) {
+	project := parseFixtureProject(t, "musicxml-roundtrip.logicx")
+	before := project.Sequences[0].descriptor.Data
+	start, _ := sequenceTail(before)
+	tail := slices.Clone(before[start:])
+	// "Roundtrip Oracle" ends at an even offset, "Väike Lind" at an odd one,
+	// so the tail moves and gains a byte of padding.
+	for _, name := range []string{"Väike Lind", "Even", "Roundtrip Oracle"} {
+		got, err := renameSequence(before, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at, ok := sequenceTail(got)
+		if !ok || at%2 != 0 || !slices.Equal(got[at:], tail) || sequenceName(got) != name {
+			t.Fatalf("%q: tail at %d, name %q", name, at, sequenceName(got))
+		}
+		if end := sequenceNameLength + 2 + len(name); end%2 == 1 && got[end] != 0 {
+			t.Fatalf("%q: padding byte is %#x", name, got[end])
+		}
+	}
+	if got, _ := renameSequence(before, "Roundtrip Oracle"); !slices.Equal(got, before) {
+		t.Fatal("renaming to the same name changed the descriptor")
+	}
+}

@@ -1077,10 +1077,42 @@ func (l *Lyric) Duplicate() (Lyric, error) {
 }
 
 // sequenceNameLength is where an MSeq payload stores its region name: a
-// two-byte length, then the name in UTF-8. The fixed-size tail follows the
-// name after up to two bytes of padding, so the tail's fields are addressed
-// from the payload's end.
+// two-byte length, then the name in UTF-8. The fixed-size tail follows at the
+// next even offset, after a zero byte when the name ends at an odd one. The
+// tail is 278 or 279 bytes depending on the Logic version that wrote it, so
+// its fields are addressed from the payload's end.
 const sequenceNameLength = 16
+
+// sequenceTail returns the offset of an MSeq payload's tail, after its name
+// and alignment.
+func sequenceTail(data []byte) (int, bool) {
+	var name string
+	if !record.Decode(data, record.String16(sequenceNameLength, &name)) {
+		return 0, false
+	}
+	end := sequenceNameLength + 2 + len(name)
+	end += end & 1
+	return end, end <= len(data)
+}
+
+// renameSequence returns an MSeq payload with its region name replaced,
+// keeping the tail at an even offset as Logic does.
+func renameSequence(data []byte, name string) ([]byte, error) {
+	tail, ok := sequenceTail(data)
+	if !ok {
+		return nil, errors.New("logicx: sequence descriptor has no name")
+	}
+	if len(name) > 0xffff {
+		return nil, errors.New("logicx: region name too long")
+	}
+	out := slices.Clip(data[:sequenceNameLength])
+	out = binary.LittleEndian.AppendUint16(out, uint16(len(name)))
+	out = append(out, name...)
+	if len(out)%2 == 1 {
+		out = append(out, 0)
+	}
+	return append(out, data[tail:]...), nil
+}
 
 // sequenceName returns the region name of an MSeq payload.
 func sequenceName(data []byte) string {
@@ -1126,7 +1158,7 @@ func (s *MIDISequence) Save() error {
 	data := s.descriptor.Data
 	if s.Name != s.name {
 		var err error
-		if data, err = record.Encode(data, record.String16(sequenceNameLength, &s.Name)); err != nil {
+		if data, err = renameSequence(data, s.Name); err != nil {
 			return fmt.Errorf("logicx: region %q: %w", s.Name, err)
 		}
 	}
