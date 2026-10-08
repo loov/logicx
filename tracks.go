@@ -94,8 +94,11 @@ type Track struct {
 	// Color is the track's color code, which counts through Logic's palette
 	// from its 74th entry; see [Track.PaletteColor]. It is stored in the
 	// strip's environment object, and is zero when the strip has none.
-	Color      uint8
-	Sends      []Send
+	Color uint8
+	Sends []Send
+	// Automation is the track's automation points, in time order, as placed
+	// in Logic. It is not written by Save.
+	Automation []AutomationPoint
 	Instrument *AudioUnit
 	MIDIFX     []AudioUnit
 	AudioFX    []AudioUnit
@@ -256,6 +259,71 @@ func (s *Send) Save() error {
 	return nil
 }
 
+// AutomationPoint is one point of a track's automation.
+type AutomationPoint struct {
+	// Position and Fraction are on the same timeline as [MIDINote.Position].
+	Position  uint32
+	Fraction  uint16
+	Parameter AutomationParameter
+	// Value is 8.24 fixed point: the volume on the fader's scale (see
+	// [Track.Volume]), the pan from 0, fully left, to 127, and the mute as 0
+	// or 1.
+	Value uint32
+}
+
+// AutomationParameter is what an automation point controls, numbered like
+// the MIDI controllers.
+type AutomationParameter uint8
+
+const (
+	AutomationVolume AutomationParameter = 7
+	AutomationMute   AutomationParameter = 9
+	AutomationPan    AutomationParameter = 10
+)
+
+const (
+	eventAutomation = 0x50
+	// automationSample marks the events Logic adds between two points to
+	// sample the ramp, or curve, joining them.
+	automationSample = 0x40
+	// automationTrack is where an automation sequence's descriptor names its
+	// track's environment object, within the descriptor's tail.
+	automationTrack    = 204
+	automationSequence = "*Automation"
+)
+
+// findAutomation decodes the automation points of each automation sequence,
+// by the environment object of the track it belongs to.
+func findAutomation(chunks []*Chunk) map[uint32][]AutomationPoint {
+	tracks := make(map[chordSequenceID]uint32)
+	for _, chunk := range chunks {
+		if chunk.Type != "MSeq" || sequenceName(chunk.Data) != automationSequence {
+			continue
+		}
+		if tail, ok := sequenceTail(chunk.Data); ok && tail+automationTrack+4 <= len(chunk.Data) {
+			tracks[chunkSequenceID(chunk)] = binary.LittleEndian.Uint32(chunk.Data[tail+automationTrack:])
+		}
+	}
+	points := make(map[uint32][]AutomationPoint)
+	for _, chunk := range chunks {
+		track, ok := tracks[chunkSequenceID(chunk)]
+		if chunk.Type != "EvSq" || !ok {
+			continue
+		}
+		for _, event := range chunk.Events {
+			d := event.Data
+			if d[0] != eventAutomation || d[15]&automationSample != 0 {
+				continue
+			}
+			points[track] = append(points[track], AutomationPoint{
+				Position: binary.LittleEndian.Uint32(d[4:]), Fraction: binary.LittleEndian.Uint16(d[2:]),
+				Parameter: AutomationParameter(d[12]), Value: binary.LittleEndian.Uint32(d[8:]),
+			})
+		}
+	}
+	return points
+}
+
 // stripEnvironment finds the environment object of a channel strip: the
 // strip holds the ID that ends each object, its own first and then those of
 // the objects it routes to.
@@ -385,6 +453,7 @@ var channelStripVariant = []byte{0x07, 0x00, 0x0e, 0x00}
 func findTracks(chunks []*Chunk) []Track {
 	var tracks []Track
 	sends := findSends(chunks)
+	automation := findAutomation(chunks)
 	var objects []*Chunk
 	for _, chunk := range chunks {
 		if chunk.Type == environmentChunk {
@@ -429,6 +498,7 @@ func findTracks(chunks []*Chunk) []Track {
 		slices.SortFunc(track.Sends, func(a, b Send) int { return cmp.Compare(a.Index, b.Index) })
 		if track.environment = stripEnvironment(chunk.Data, objects); track.environment != nil {
 			track.Color = track.environment.Data[environmentColor]
+			track.Automation = automation[chunkSequenceID(track.environment).sequence]
 		}
 		tracks = append(tracks, track)
 	}

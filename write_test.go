@@ -975,3 +975,34 @@ func TestTrack_SaveColor(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestTrack_DecodesAutomation(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-automation.logicx")
+	db := func(v uint32) float64 { return math.Round(40*math.Log10(float64(v)/unityVolume)*10) / 10 }
+	type point struct {
+		Position  uint32
+		Parameter AutomationParameter
+		Value     float64
+	}
+	// The values Logic showed on the points; pan and mute as stored.
+	want := map[string][]point{
+		"Inst 1": {{38400, AutomationVolume, 0}, {42160, AutomationVolume, -9.7}, {46400, AutomationVolume, -18.8}},
+		"Inst 2": {{38400, AutomationVolume, 0}, {41600, AutomationVolume, 0}, {53920, AutomationVolume, -20.7}},
+		"Inst 3": {{38400, AutomationPan, 0}, {42320, AutomationPan, 64}, {46160, AutomationPan, 127}},
+		"Inst 4": {{38400, AutomationMute, 0}, {42240, AutomationMute, 0}, {46000, AutomationMute, 1}},
+		"Inst 5": nil,
+	}
+	for name, points := range want {
+		var got []point
+		for _, a := range trackNamed(t, &p, name).Automation {
+			v := math.Round(float64(a.Value) / (1 << 24))
+			if a.Parameter == AutomationVolume {
+				v = db(a.Value)
+			}
+			got = append(got, point{a.Position, a.Parameter, v})
+		}
+		if !slices.Equal(got, points) {
+			t.Errorf("%s automation = %v, want %v", name, got, points)
+		}
+	}
+}
