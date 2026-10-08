@@ -5,25 +5,31 @@ package logicx
 import (
 	"errors"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/loov/logicx/internal/record"
 )
 
-// Transport is the project's cycle, end and SMPTE offset, from its "Song"
-// chunk. Positions are on the same timeline as [MIDINote.Position].
+// Transport is the project's cycle, end and SMPTE start, from its "Song"
+// chunk and tempo map. Positions are on the same timeline as
+// [MIDINote.Position].
 type Transport struct {
 	Cycle      bool
 	CycleStart uint32
 	CycleEnd   uint32
 	// End is the project end.
 	End uint32
-	// SMPTEBar is the position that plays at SMPTEOffset, a time in samples
-	// at the project's sample rate. Logic starts with no bar, 0, and an
-	// offset of one hour. Both are read only: Logic rebuilds the offset from
-	// a setting not yet found, and discards one written here.
-	SMPTEBar    uint32
-	SMPTEOffset uint32
-	chunk       *Chunk
+	// SMPTEStart is the SMPTE time at which the first tempo change plays,
+	// which is at bar 1 unless the project starts before it. Logic starts
+	// out at one hour. It is stored as each tempo change's
+	// [TempoChange.Time], so Save shifts the whole tempo map.
+	SMPTEStart time.Duration
+	// SMPTEBar is read only: Logic sets it to bar 1 once the SMPTE start is
+	// changed, and it is 0 before.
+	SMPTEBar uint32
+	chunk    *Chunk
+	tempo    []TempoChange
 }
 
 // The song chunk holds the transport twice, the second copy songCopy bytes
@@ -36,13 +42,12 @@ const (
 	songCycleStart = 400
 	songCycleEnd   = 408
 	songSMPTEBar   = 336
-	songSMPTE      = 802
 	songMinimum    = songCycleEnd + songCopy + 4
 )
 
 // fields is the layout of the transport.
 func (t *Transport) fields() []record.Field {
-	return append(t.editable(), record.Uint32LE(songSMPTEBar, &t.SMPTEBar), record.Uint32LE(songSMPTE, &t.SMPTEOffset))
+	return append(t.editable(), record.Uint32LE(songSMPTEBar, &t.SMPTEBar))
 }
 
 // editable is the part of the layout that Save writes.
@@ -66,21 +71,51 @@ func findTransport(chunks []*Chunk) *Transport {
 		if chunk.Type != songChunk || len(chunk.Data) < songMinimum {
 			continue
 		}
-		t := &Transport{chunk: chunk}
+		t := &Transport{chunk: chunk, tempo: findTempoChanges(chunks)}
 		record.Decode(chunk.Data, t.fields()...)
+		t.SMPTEStart = t.smpteStart()
 		return t
 	}
 	return nil
 }
 
-// Save writes t, except its SMPTE fields, into both copies in the song chunk. ProjectData.Transport is
-// not updated; see [ProjectData.Refresh].
+// smpteStart is the time of the first tempo change as decoded.
+func (t *Transport) smpteStart() time.Duration {
+	if len(t.tempo) == 0 {
+		return 0
+	}
+	return time.Duration(t.tempo[0].Time) * tempoTimeUnit
+}
+
+// Save writes t into both copies in the song chunk and shifts the tempo map
+// when SMPTEStart changed. ProjectData.Transport and
+// ProjectData.TempoChanges are not updated; see [ProjectData.Refresh].
 func (t *Transport) Save() error {
 	if t.chunk == nil {
 		return errors.New("logicx: transport was not decoded from a project")
 	}
 	if t.CycleStart > t.CycleEnd {
 		return fmt.Errorf("logicx: cycle from %d ends before it starts, at %d", t.CycleStart, t.CycleEnd)
+	}
+	if shift := (t.SMPTEStart - t.smpteStart()) / tempoTimeUnit; shift != 0 {
+		if len(t.tempo) == 0 {
+			return errors.New("logicx: the SMPTE start needs a tempo map")
+		}
+		// Validated whole first, so that a failure leaves the map unshifted.
+		for i := range t.tempo {
+			if shifted := int64(t.tempo[i].Time) + int64(shift); shifted < 0 || shifted > math.MaxUint32 {
+				return fmt.Errorf("logicx: SMPTE start %v out of range", t.SMPTEStart)
+			}
+			if err := t.tempo[i].ref.check("tempo change"); err != nil {
+				return err
+			}
+		}
+		for i := range t.tempo {
+			t.tempo[i].Time = uint32(int64(t.tempo[i].Time) + int64(shift))
+			if err := t.tempo[i].Save(); err != nil {
+				return err
+			}
+		}
 	}
 	data, err := record.Encode(t.chunk.Data, t.editable()...)
 	if err != nil {

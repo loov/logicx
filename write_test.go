@@ -10,9 +10,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fixtureProjects returns the path and contents of every fixture ProjectData.
@@ -1161,14 +1163,14 @@ func TestTransport_DecodesWhatLogicSet(t *testing.T) {
 	for fixture, want := range map[string]Transport{
 		// Logic starts with a cycle over bars 1 to 5, the end at bar 129 and
 		// bar 1 at one hour.
-		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), 0, 3600 * 44100, nil},
-		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), 0, 3600 * 44100, nil},
-		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), 0, 3600 * 44100, nil},
-		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), bar(1), 10 * 44100, nil},
+		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), time.Hour, 0, nil, nil},
+		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), time.Hour, 0, nil, nil},
+		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), time.Hour, 0, nil, nil},
+		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), 10 * time.Second, bar(1), nil, nil},
 	} {
 		got := *parseFixtureProject(t, fixture).Transport
-		got.chunk = nil
-		if got != want {
+		got.chunk, got.tempo = nil, nil
+		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s transport = %+v, want %+v", fixture, got, want)
 		}
 	}
@@ -1177,13 +1179,11 @@ func TestTransport_DecodesWhatLogicSet(t *testing.T) {
 func TestTransport_Save(t *testing.T) {
 	p := parseFixtureProject(t, "mixer-base.logicx")
 	tr := p.Transport
-	tr.Cycle, tr.CycleStart, tr.CycleEnd, tr.End = true, 46080, 61440, 226560
-	smpte := tr.SMPTEOffset
-	tr.SMPTEOffset = 441000
+	before := p.TempoChanges
+	tr.Cycle, tr.CycleStart, tr.CycleEnd, tr.End, tr.SMPTEStart = true, 46080, 61440, 226560, 10*time.Second
 	if err := tr.Save(); err != nil {
 		t.Fatal(err)
 	}
-	tr.SMPTEOffset = smpte // Save leaves it alone.
 	// Logic keeps both copies equal.
 	d := tr.chunk.Data
 	for _, at := range []int{songCycle, songEnd, songCycleStart, songCycleEnd} {
@@ -1191,14 +1191,30 @@ func TestTransport_Save(t *testing.T) {
 			t.Errorf("the copies differ at %d", at)
 		}
 	}
-	got, want := *reparse(t, &p).Transport, *tr
-	got.chunk, want.chunk = nil, nil
-	if got != want {
+	q := reparse(t, &p)
+	got, want := *q.Transport, *tr
+	got.chunk, want.chunk, got.tempo, want.tempo = nil, nil, nil, nil
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("transport = %+v, want %+v", got, want)
+	}
+	// The whole tempo map moves with the start, as in Logic's 10 s save.
+	shift := uint32((time.Hour - 10*time.Second) / tempoTimeUnit)
+	for i, c := range q.TempoChanges {
+		if c.Time != before[i].Time-shift || c.BPM != before[i].BPM {
+			t.Errorf("tempo change %d = %+v, want time %d", i, c, before[i].Time-shift)
+		}
+	}
+	if q.TempoChanges[0].Time != 20000 {
+		t.Errorf("first tempo time = %d, want Logic's 20000", q.TempoChanges[0].Time)
 	}
 	backwards := parseFixtureProject(t, "mixer-base.logicx").Transport
 	backwards.CycleStart, backwards.CycleEnd = 61440, 46080
 	if backwards.Save() == nil {
 		t.Error("Save() accepted a cycle that ends before it starts")
+	}
+	negative := parseFixtureProject(t, "mixer-base.logicx").Transport
+	negative.SMPTEStart = -time.Second
+	if negative.Save() == nil {
+		t.Error("Save() accepted a negative SMPTE start")
 	}
 }

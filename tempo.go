@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/loov/logicx/internal/record"
 )
@@ -21,8 +22,11 @@ type TempoChange struct {
 	// control points encode? 0x01 is set on every record of a map that may
 	// have come from applying a region's tempo to the project; unconfirmed.
 	Flags uint8
-	Raw   [32]byte
-	ref   eventRef
+	// Time is when the change plays, in units of tempoTimeUnit and counting
+	// the project's SMPTE start; Logic computes it from the map.
+	Time uint32
+	Raw  [32]byte
+	ref  eventRef
 }
 
 // findTempoChanges collects the tempo map from every event sequence, sorted by
@@ -56,8 +60,12 @@ func (c *TempoChange) fields(value *uint32) []record.Field {
 		record.Uint8(15, &c.Flags),
 		record.Uint32LE(16, value),
 		record.Equal(23, 0x88),
+		record.Uint32LE(24, &c.Time),
 	}
 }
+
+// tempoTimeUnit is the resolution of [TempoChange.Time].
+const tempoTimeUnit = 500 * time.Microsecond
 
 // maxTempoValue is the largest scaled BPM accepted, 1000 BPM.
 const maxTempoValue = 10_000_000
