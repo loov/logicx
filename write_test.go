@@ -1161,10 +1161,10 @@ func TestTransport_DecodesWhatLogicSet(t *testing.T) {
 	for fixture, want := range map[string]Transport{
 		// Logic starts with a cycle over bars 1 to 5, the end at bar 129 and
 		// bar 1 at one hour.
-		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), 3600 * 44100, nil},
-		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), 3600 * 44100, nil},
-		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), 3600 * 44100, nil},
-		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), 10 * 44100, nil},
+		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), 0, 3600 * 44100, nil},
+		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), 0, 3600 * 44100, nil},
+		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), 0, 3600 * 44100, nil},
+		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), bar(1), 10 * 44100, nil},
 	} {
 		got := *parseFixtureProject(t, fixture).Transport
 		got.chunk = nil
@@ -1177,10 +1177,13 @@ func TestTransport_DecodesWhatLogicSet(t *testing.T) {
 func TestTransport_Save(t *testing.T) {
 	p := parseFixtureProject(t, "mixer-base.logicx")
 	tr := p.Transport
-	tr.Cycle, tr.CycleStart, tr.CycleEnd, tr.End, tr.SMPTEOffset = true, 46080, 61440, 226560, 441000
+	tr.Cycle, tr.CycleStart, tr.CycleEnd, tr.End = true, 46080, 61440, 226560
+	smpte := tr.SMPTEOffset
+	tr.SMPTEOffset = 441000
 	if err := tr.Save(); err != nil {
 		t.Fatal(err)
 	}
+	tr.SMPTEOffset = smpte // Save leaves it alone.
 	// Logic keeps both copies equal.
 	d := tr.chunk.Data
 	for _, at := range []int{songCycle, songEnd, songCycleStart, songCycleEnd} {

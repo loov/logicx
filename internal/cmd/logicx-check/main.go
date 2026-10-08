@@ -293,12 +293,12 @@ var edits = []edit{
 		if t == nil {
 			return nil, errors.New("no transport")
 		}
-		t.Cycle, t.CycleStart, t.CycleEnd, t.End, t.SMPTEOffset = true, 46080, 61440, 226560, 441000
+		t.Cycle, t.CycleStart, t.CycleEnd, t.End = true, 46080, 61440, 226560
 		want := *t
 		return func(p logicx.ProjectData) error {
 			got := p.Transport
 			return expect(got != nil && got.Cycle && got.CycleStart == want.CycleStart && got.CycleEnd == want.CycleEnd &&
-				got.End == want.End && got.SMPTEOffset == want.SMPTEOffset, "transport %+v", got)
+				got.End == want.End, "transport %+v", got)
 		}, t.Save()
 	}},
 }

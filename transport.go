@@ -17,8 +17,11 @@ type Transport struct {
 	CycleEnd   uint32
 	// End is the project end.
 	End uint32
-	// SMPTEOffset is the SMPTE time at which bar 1 plays, in samples at the
-	// project's sample rate; Logic starts out at one hour.
+	// SMPTEBar is the position that plays at SMPTEOffset, a time in samples
+	// at the project's sample rate. Logic starts with no bar, 0, and an
+	// offset of one hour. Both are read only: Logic rebuilds the offset from
+	// a setting not yet found, and discards one written here.
+	SMPTEBar    uint32
 	SMPTEOffset uint32
 	chunk       *Chunk
 }
@@ -32,12 +35,18 @@ const (
 	songEnd        = 384
 	songCycleStart = 400
 	songCycleEnd   = 408
+	songSMPTEBar   = 336
 	songSMPTE      = 802
 	songMinimum    = songCycleEnd + songCopy + 4
 )
 
 // fields is the layout of the transport.
 func (t *Transport) fields() []record.Field {
+	return append(t.editable(), record.Uint32LE(songSMPTEBar, &t.SMPTEBar), record.Uint32LE(songSMPTE, &t.SMPTEOffset))
+}
+
+// editable is the part of the layout that Save writes.
+func (t *Transport) editable() []record.Field {
 	var fields []record.Field
 	for _, at := range []int{0, songCopy} {
 		fields = append(fields,
@@ -47,7 +56,7 @@ func (t *Transport) fields() []record.Field {
 			record.Uint32LE(at+songCycleEnd, &t.CycleEnd),
 		)
 	}
-	return append(fields, record.Uint32LE(songSMPTE, &t.SMPTEOffset))
+	return fields
 }
 
 // findTransport decodes the transport, or returns nil when the project has
@@ -64,7 +73,7 @@ func findTransport(chunks []*Chunk) *Transport {
 	return nil
 }
 
-// Save writes t into both copies in the song chunk. ProjectData.Transport is
+// Save writes t, except its SMPTE fields, into both copies in the song chunk. ProjectData.Transport is
 // not updated; see [ProjectData.Refresh].
 func (t *Transport) Save() error {
 	if t.chunk == nil {
@@ -73,7 +82,7 @@ func (t *Transport) Save() error {
 	if t.CycleStart > t.CycleEnd {
 		return fmt.Errorf("logicx: cycle from %d ends before it starts, at %d", t.CycleStart, t.CycleEnd)
 	}
-	data, err := record.Encode(t.chunk.Data, t.fields()...)
+	data, err := record.Encode(t.chunk.Data, t.editable()...)
 	if err != nil {
 		return fmt.Errorf("logicx: transport: %w", err)
 	}
