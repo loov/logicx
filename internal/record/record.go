@@ -102,6 +102,38 @@ func Uint8(offset int, value *uint8) Field {
 	}
 }
 
+// Bit captures the bit mask of the byte at offset as a flag. It leaves the
+// byte's other bits alone, and does not mark the byte as described, since
+// those bits may still be unknown.
+func Bit(offset int, mask byte, value *bool) Field { return bit{offset, mask, value} }
+
+type bit struct {
+	offset int
+	mask   byte
+	value  *bool
+}
+
+func (f bit) decode(data []byte) bool {
+	if f.offset >= len(data) {
+		return false
+	}
+	*f.value = data[f.offset]&f.mask != 0
+	return true
+}
+
+func (f bit) cover([]byte, func(start, end int)) {}
+
+func (f bit) encode(data []byte) ([]byte, error) {
+	if f.offset >= len(data) {
+		return nil, fmt.Errorf("record: flag at offset %d past the end of %d bytes", f.offset, len(data))
+	}
+	data[f.offset] &^= f.mask
+	if *f.value {
+		data[f.offset] |= f.mask
+	}
+	return data, nil
+}
+
 // Uint16LE captures a little-endian uint16 at offset.
 func Uint16LE(offset int, value *uint16) Field {
 	return fixed{offset, 2,

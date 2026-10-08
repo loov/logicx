@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -793,5 +794,87 @@ func TestNoteAttributes_ClearingRemovesTheAtom(t *testing.T) {
 	}
 	if err := stale.Save(); err == nil {
 		t.Fatal("Save() wrote an articulation whose atom moved")
+	}
+}
+
+// mixerEdits are the mixer settings set in Logic on the instrument tracks of
+// the mixer fixture; the rest of the tracks were left at their defaults.
+var mixerEdits = map[string]func(*Track){
+	"Inst 1":  func(t *Track) { t.SetVolumeDB(-6) },
+	"Inst 2":  func(t *Track) { t.SetVolumeDB(3) },
+	"Inst 3":  func(t *Track) { t.SetVolumeDB(-20) },
+	"Inst 4":  func(t *Track) { t.Pan = -64 },
+	"Inst 5":  func(t *Track) { t.Pan = 20 },
+	"Inst 6":  func(t *Track) { t.Mute = true },
+	"Inst 7":  func(t *Track) { t.Solo = true },
+	"Inst 11": func(t *Track) { t.InputMonitoring = true },
+}
+
+func trackNamed(t *testing.T, p *ProjectData, name string) *Track {
+	t.Helper()
+	for i := range p.Tracks {
+		if p.Tracks[i].Name == name {
+			return &p.Tracks[i]
+		}
+	}
+	t.Fatalf("no track %q", name)
+	return nil
+}
+
+func TestTrack_DecodesTheMixer(t *testing.T) {
+	logic := parseFixtureProject(t, "mixer.logicx")
+	base := parseFixtureProject(t, "mixer-base.logicx")
+	for name, edit := range mixerEdits {
+		want := *trackNamed(t, &base, name)
+		edit(&want)
+		got := trackNamed(t, &logic, name)
+		// The fader was dragged, so its level is only near what was typed.
+		if math.Abs(got.VolumeDB()-want.VolumeDB()) > 0.05 || got.Pan != want.Pan ||
+			got.Mute != want.Mute || got.Solo != want.Solo || got.InputMonitoring != want.InputMonitoring {
+			t.Errorf("%s: got %.2f dB pan %d mute %v solo %v monitor %v, want %.2f dB pan %d mute %v solo %v monitor %v",
+				name, got.VolumeDB(), got.Pan, got.Mute, got.Solo, got.InputMonitoring,
+				want.VolumeDB(), want.Pan, want.Mute, want.Solo, want.InputMonitoring)
+		}
+	}
+	if db := trackNamed(t, &base, "Inst 1").VolumeDB(); db != 0 {
+		t.Errorf("default volume = %v dB", db)
+	}
+}
+
+func TestTrack_SaveReproducesLogicsMixer(t *testing.T) {
+	logic := parseFixtureProject(t, "mixer.logicx")
+	project := parseFixtureProject(t, "mixer-base.logicx")
+	for name, edit := range mixerEdits {
+		track, theirs := trackNamed(t, &project, name), trackNamed(t, &logic, name)
+		edit(track)
+		track.Volume = theirs.Volume
+		if err := track.Save(); err != nil {
+			t.Fatal(err)
+		}
+		ours, want := track.chunk.Data, theirs.chunk.Data
+		// Logic marks every other strip as muted by the solo.
+		if len(ours) != len(want) || !bytes.Equal(ours[:channelStripMute], want[:channelStripMute]) ||
+			ours[channelStripMute]&^0x02 != want[channelStripMute]&^0x02 ||
+			!bytes.Equal(ours[channelStripMute+1:], want[channelStripMute+1:]) {
+			t.Errorf("%s:\n ours  % x\n Logic % x", name, ours, want)
+		}
+	}
+}
+
+func TestTrack_SetVolumeDB(t *testing.T) {
+	var track Track
+	for _, db := range []float64{-20, -10, 0, 3} {
+		track.SetVolumeDB(db)
+		if got := track.VolumeDB(); math.Abs(got-db) > 1e-6 {
+			t.Errorf("SetVolumeDB(%v) reads back %v", db, got)
+		}
+	}
+	track.SetVolumeDB(math.Inf(-1))
+	if track.Volume != 0 {
+		t.Errorf("-Inf dB = %#x", track.Volume)
+	}
+	track.SetVolumeDB(20)
+	if track.Volume != 127<<24 {
+		t.Errorf("+20 dB = %#x, want Logic's maximum", track.Volume)
 	}
 }

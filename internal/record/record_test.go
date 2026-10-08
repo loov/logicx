@@ -32,6 +32,19 @@ func TestEncode_RoundTripsAndKeepsUndecodedBytes(t *testing.T) {
 	}
 }
 
+func TestBit_KeepsTheOtherBits(t *testing.T) {
+	var on bool
+	field := Bit(0, 0x01, &on)
+	if !Decode([]byte{0x03}, field) || !on {
+		t.Fatal("Decode() missed a set flag")
+	}
+	on = false
+	got, err := Encode([]byte{0x03}, field)
+	if err != nil || got[0] != 0x02 {
+		t.Fatalf("Encode() = %v, %v; want [2]", got, err)
+	}
+}
+
 func TestUnknown_ListsUndescribedRuns(t *testing.T) {
 	// A tag, an undescribed byte, a two-byte name, then two undescribed bytes
 	// and a value counted from the name's end.

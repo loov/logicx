@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -69,20 +70,72 @@ const (
 	TrackKindUnknown TrackKind = "unknown"
 )
 
-// Track contains a decoded channel strip and its plug-in chain.
+// Track contains a decoded channel strip, its mixer settings and its plug-in
+// chain.
 type Track struct {
-	Name       string
-	Kind       TrackKind
-	Offset     int
-	Active     bool
-	Instrument *AudioUnit
-	MIDIFX     []AudioUnit
-	AudioFX    []AudioUnit
-	strip      uint16
-	chunk      *Chunk
+	Name   string
+	Kind   TrackKind
+	Offset int
+	Active bool
+	// Volume is the fader as 8.24 fixed point: 90.0 is 0 dB, and Logic's
+	// fader tops out at 127.0, about +6 dB. See [Track.VolumeDB].
+	Volume uint32
+	// Pan runs from -64, fully left, to 63, fully right.
+	Pan             int8
+	Mute            bool
+	Solo            bool
+	InputMonitoring bool
+	Instrument      *AudioUnit
+	MIDIFX          []AudioUnit
+	AudioFX         []AudioUnit
+	strip           uint16
+	chunk           *Chunk
+	// mixer reports whether the strip is long enough to hold the mixer
+	// settings.
+	mixer bool
 	// name is Name as decoded, so that Save writes it only when it was
 	// changed.
 	name string
+}
+
+// Mixer settings within a channel strip chunk. The volume is stored twice:
+// as 8.24 fixed point, and as its whole part alone.
+const (
+	channelStripMonitor  = 84 // 0x08 is input monitoring
+	channelStripVolume7  = 85
+	channelStripSolo     = 88 // 0x01 is solo
+	channelStripPan      = 89 // 64 is center
+	channelStripMute     = 90 // 0x01 is mute; 0x02 is muted by another's solo
+	channelStripVolume   = 116
+	channelStripMixerEnd = channelStripVolume + 4
+)
+
+// mixerFields is the layout of a strip's mixer settings; volume7 and pan
+// hold the stored forms of the volume's whole part and of Pan.
+func (t *Track) mixerFields(volume7, pan *uint8) []record.Field {
+	return []record.Field{
+		record.Bit(channelStripMonitor, 0x08, &t.InputMonitoring),
+		record.Uint8(channelStripVolume7, volume7),
+		record.Bit(channelStripSolo, 0x01, &t.Solo),
+		record.Uint8(channelStripPan, pan),
+		record.Bit(channelStripMute, 0x01, &t.Mute),
+		record.Uint32LE(channelStripVolume, &t.Volume),
+	}
+}
+
+// unityVolume is Track.Volume at 0 dB.
+const unityVolume = 90 << 24
+
+// VolumeDB returns the fader level in decibels, -Inf when it is all the way
+// down. Logic's fader follows the square of its position: 40·log10(v/90).
+func (t *Track) VolumeDB() float64 {
+	return 40 * math.Log10(float64(t.Volume)/unityVolume)
+}
+
+// SetVolumeDB sets the fader level in decibels, limited to Logic's range.
+func (t *Track) SetVolumeDB(db float64) {
+	v := math.Round(unityVolume * math.Pow(10, db/40))
+	t.Volume = uint32(min(max(v, 0), 127<<24))
 }
 
 // Plug-in instances are stored one per chunk, sharing a chunk type with other
@@ -198,8 +251,8 @@ func findTracks(chunks []*Chunk) []Track {
 			len(chunk.Data) < channelStripRecord+channelStripRecordSize {
 			continue
 		}
-		record := chunk.Data[channelStripRecord : channelStripRecord+channelStripRecordSize]
-		field := record[:16]
+		strip := chunk.Data[channelStripRecord : channelStripRecord+channelStripRecordSize]
+		field := strip[:16]
 		nameEnd := 16
 		if zero := bytes.IndexByte(field[1:], 0); zero >= 0 {
 			nameEnd = zero + 1
@@ -211,14 +264,20 @@ func findTracks(chunks []*Chunk) []Track {
 		if name == "" {
 			continue
 		}
-		descriptor := record[16:24]
-		tracks = append(tracks, Track{
+		descriptor := strip[16:24]
+		track := Track{
 			Name: name, Kind: trackKind(descriptor),
 			Offset: chunk.Offset + chunkHeaderSize + channelStripRecord,
 			Active: descriptor[2]&0x04 != 0 || descriptor[4] != 0,
 			strip:  binary.LittleEndian.Uint16(chunk.Header[14:]),
 			chunk:  chunk, name: name,
-		})
+		}
+		if len(chunk.Data) >= channelStripMixerEnd {
+			var volume7, pan uint8
+			record.Decode(chunk.Data, track.mixerFields(&volume7, &pan)...)
+			track.Pan, track.mixer = int8(pan-64), true
+		}
+		tracks = append(tracks, track)
 	}
 	return tracks
 }
@@ -230,20 +289,28 @@ const (
 	channelStripNameSize = 15
 )
 
-// Save writes t's name into the channel strip it was decoded from, when it was
-// changed. Kind and Active are not written. ProjectData.Tracks is not
-// updated; see [ProjectData.Refresh].
+// Save writes t's mixer settings, and its name when it was changed, into the
+// channel strip it was decoded from. Kind and Active are not written.
+// ProjectData.Tracks is not updated; see [ProjectData.Refresh].
 func (t *Track) Save() error {
 	if t.chunk == nil {
 		return errors.New("logicx: track was not decoded from a project")
 	}
-	if t.Name == t.name {
-		return nil
+	var fields []record.Field
+	if t.Name != t.name {
+		if t.Name == "" || !printable([]byte(t.Name)) {
+			return fmt.Errorf("logicx: track name %q is not non-empty printable ASCII", t.Name)
+		}
+		fields = append(fields, record.CString(channelStripName, channelStripNameSize, &t.Name))
 	}
-	if t.Name == "" || !printable([]byte(t.Name)) {
-		return fmt.Errorf("logicx: track name %q is not non-empty printable ASCII", t.Name)
+	if t.mixer {
+		if t.Volume > 127<<24 || t.Pan < -64 {
+			return fmt.Errorf("logicx: track %q: volume %#x or pan %d out of range", t.Name, t.Volume, t.Pan)
+		}
+		volume7, pan := uint8(t.Volume>>24), uint8(t.Pan+64)
+		fields = append(fields, t.mixerFields(&volume7, &pan)...)
 	}
-	data, err := record.Encode(t.chunk.Data, record.CString(channelStripName, channelStripNameSize, &t.Name))
+	data, err := record.Encode(t.chunk.Data, fields...)
 	if err != nil {
 		return fmt.Errorf("logicx: track %q: %w", t.Name, err)
 	}
