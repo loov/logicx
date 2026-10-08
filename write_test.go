@@ -3,6 +3,7 @@
 package logicx
 
 import (
+	"encoding/binary"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -100,6 +101,68 @@ func saveAll(t *testing.T, p *ProjectData) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// everySave returns the Save of every decoded value in p.
+func everySave(p *ProjectData) []func() error {
+	var saves []func() error
+	for i := range p.TempoChanges {
+		saves = append(saves, p.TempoChanges[i].Save)
+	}
+	for i := range p.TimeSignatures {
+		saves = append(saves, p.TimeSignatures[i].Save)
+	}
+	for i := range p.KeySignatures {
+		saves = append(saves, p.KeySignatures[i].Save)
+	}
+	for i := range p.Markers {
+		saves = append(saves, p.Markers[i].Save)
+	}
+	for i := range p.ProjectChords {
+		saves = append(saves, p.ProjectChords[i].Save)
+	}
+	for i := range p.Sequences {
+		s := &p.Sequences[i]
+		saves = append(saves, s.Save)
+		for j := range s.Chords {
+			saves = append(saves, s.Chords[j].Save)
+		}
+		for j := range s.Notes {
+			n := &s.Notes[j]
+			saves = append(saves, n.Save)
+			for k := range n.Lyrics {
+				saves = append(saves, n.Lyrics[k].Save)
+			}
+			for k := range n.ScoreArticulations {
+				saves = append(saves, n.ScoreArticulations[k].Save)
+			}
+			for k := range n.ScoreFermatas {
+				saves = append(saves, n.ScoreFermatas[k].Save)
+			}
+			for k := range n.ScoreOrnaments {
+				saves = append(saves, n.ScoreOrnaments[k].Save)
+			}
+			for k := range n.ScoreArpeggios {
+				saves = append(saves, n.ScoreArpeggios[k].Save)
+			}
+		}
+	}
+	for i := range p.AudioFiles {
+		saves = append(saves, p.AudioFiles[i].Save)
+	}
+	for i := range p.AudioRegions {
+		saves = append(saves, p.AudioRegions[i].Save)
+	}
+	for i := range p.Environment {
+		saves = append(saves, p.Environment[i].Save)
+	}
+	for i := range p.Tracks {
+		saves = append(saves, p.Tracks[i].Save)
+	}
+	for i := range p.AudioUnits {
+		saves = append(saves, p.AudioUnits[i].Save)
+	}
+	return saves
 }
 
 func TestSave_UnchangedValuesKeepEveryByte(t *testing.T) {
@@ -504,4 +567,46 @@ func TestMarker_SaveRenamesThroughItsText(t *testing.T) {
 	if err := marker.Save(); err == nil {
 		t.Fatal("Save() accepted a marker name RTF decoding cannot read back")
 	}
+}
+
+func TestRenameMarkerText_RejectsShortChunk(t *testing.T) {
+	// Length fields that agree with a chunk too short to hold its RTF.
+	data := make([]byte, 30)
+	binary.LittleEndian.PutUint32(data[0:], 30)
+	binary.LittleEndian.PutUint32(data[16:], markerTextStart)
+	binary.LittleEndian.PutUint32(data[20:], 30)
+	if _, err := renameMarkerText(data, "a", "b"); err == nil {
+		t.Fatal("renameMarkerText() accepted a chunk shorter than its RTF offset")
+	}
+}
+
+// FuzzProjectData checks that no input makes parsing, listing unknown bytes or
+// saving every decoded value panic, and that what parses writes back
+// unchanged.
+func FuzzProjectData(f *testing.F) {
+	for _, data := range fixtureProjects(&testing.T{}) {
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		project, err := ParseProjectData(data)
+		if err != nil {
+			return
+		}
+		project.Unknown()
+		got, err := project.MarshalBinary()
+		if err != nil || !slices.Equal(got, data[:len(got)]) {
+			t.Fatalf("parsed input does not write back: %v", err)
+		}
+		for _, save := range everySave(&project) {
+			save() // errors are expected for malformed records; panics are not
+		}
+		for _, marker := range project.Markers {
+			marker.Name = "Renamed"
+			marker.Save()
+		}
+		for _, sequence := range project.Sequences {
+			sequence.Name, sequence.Position = "Renamed", sequence.Position+960
+			sequence.Save()
+		}
+	})
 }

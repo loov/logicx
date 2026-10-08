@@ -606,7 +606,10 @@ func appendAudioChunk(data []byte, descriptor string, variant []byte, strip uint
 	copy(header[channelStripHeaderStart:], variant)
 	binary.LittleEndian.PutUint16(header[14:], strip)
 	binary.LittleEndian.PutUint64(header[28:], uint64(len(payload)))
-	return append(append(data, header...), payload...)
+	data = append(append(data, header...), payload...)
+	// Keep the file header's count of the bytes after it.
+	binary.LittleEndian.PutUint64(data[16:24], uint64(len(data)-24))
+	return data
 }
 
 // sequenceDescriptor returns an MSeq payload naming a region: 16 bytes, the
@@ -627,7 +630,10 @@ func appendChunkID(data []byte, descriptor string, id uint32, payload []byte) []
 	copy(header, descriptor)
 	binary.LittleEndian.PutUint32(header[10:14], id)
 	binary.LittleEndian.PutUint64(header[28:], uint64(len(payload)))
-	return append(append(data, header...), payload...)
+	data = append(append(data, header...), payload...)
+	// Keep the file header's count of the bytes after it.
+	binary.LittleEndian.PutUint64(data[16:24], uint64(len(data)-24))
+	return data
 }
 
 func TestParseProjectData_GroupedChordsExpandFromOneChild(t *testing.T) {

@@ -1258,7 +1258,7 @@ var rtfEscape = strings.NewReplacer(`\`, `\\`, `{`, `\{`, `}`, `\}`)
 func renameMarkerText(data []byte, old, name string) ([]byte, error) {
 	var size, start, repeated uint32
 	if !record.Decode(data, markerTextFields(&size, &start, &repeated)...) ||
-		int(size) != len(data) || repeated != size || start != markerTextStart ||
+		int(size) != len(data) || repeated != size || start != markerTextStart || len(data) < markerTextStart ||
 		!bytes.HasPrefix(data[start:], []byte(`{\rtf`)) {
 		return nil, errors.New("logicx: marker text chunk layout not recognized")
 	}

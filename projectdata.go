@@ -93,6 +93,10 @@ func parseChunks(data []byte) ([]*Chunk, error) {
 	if len(data) < 24 || !bytes.Equal(data[:4], []byte{0x23, 0x47, 0xc0, 0xab}) {
 		return nil, errors.New("logicx: invalid ProjectData header")
 	}
+	// The header counts the bytes after it, so a truncated file shows here.
+	if size := binary.LittleEndian.Uint64(data[16:24]); size != uint64(len(data)-24) {
+		return nil, fmt.Errorf("logicx: ProjectData header says %d bytes follow, but %d do", size, len(data)-24)
+	}
 	var chunks []*Chunk
 	for offset := 24; offset < len(data); {
 		if len(data)-offset < 36 {
