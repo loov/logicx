@@ -3,9 +3,11 @@
 package logicx
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -392,4 +394,42 @@ func TestUnknown_ExcludesDecodedFields(t *testing.T) {
 	if tempos != len(project.TempoChanges) || chunks == 0 {
 		t.Fatalf("got %d tempo records for %d tempo changes, %d chunks", tempos, len(project.TempoChanges), chunks)
 	}
+}
+
+// TestLibrary_RoundTrips checks every ProjectData under the folders listed in
+// LOGICX_LIBRARY, one per line: each must write back byte for byte, and again
+// after saving every decoded value unchanged. The files are only read.
+func TestLibrary_RoundTrips(t *testing.T) {
+	roots := os.Getenv("LOGICX_LIBRARY")
+	if roots == "" {
+		t.Skip("LOGICX_LIBRARY is not set")
+	}
+	var paths []string
+	for _, root := range strings.Split(roots, "\n") {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && d.Name() == "ProjectData" {
+				paths = append(paths, path)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		project, err := ParseProjectData(data)
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		saveAll(t, &project)
+		if got, err := project.MarshalBinary(); err != nil || !slices.Equal(got, data) {
+			t.Errorf("%s: does not write back unchanged", path)
+		}
+	}
+	t.Logf("checked %d projects", len(paths))
 }
