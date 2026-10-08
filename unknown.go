@@ -65,6 +65,18 @@ func (p *ProjectData) Unknown() []UnknownRecord {
 // eventLayout names an event record and returns its layout, trying the
 // decoders this package has for its type.
 func eventLayout(data []byte) (string, []record.Field) {
+	if isNote(data[0]) {
+		if n, ok := decodeMIDINote(data); ok {
+			var status, release uint8
+			fields := n.fields(&status, &release)
+			for offset := 32; offset+atomSize <= len(data); offset += atomSize {
+				if atom := atomLayout(data[offset : offset+atomSize]); atom != nil {
+					fields = append(fields, record.At(offset, atom...))
+				}
+			}
+			return "note", fields
+		}
+	}
 	switch data[0] {
 	case eventTempo:
 		if c, ok := decodeTempoChange(data); ok {
@@ -97,16 +109,6 @@ func eventLayout(data []byte) (string, []record.Field) {
 		}
 		if l, ok := decodeRegionLink(data); ok {
 			return "region link", l.fields()
-		}
-	case eventNote:
-		if n, ok := decodeMIDINote(data); ok {
-			fields := n.fields()
-			for offset := 32; offset+atomSize <= len(data); offset += atomSize {
-				if atom := atomLayout(data[offset : offset+atomSize]); atom != nil {
-					fields = append(fields, record.At(offset, atom...))
-				}
-			}
-			return "note", fields
 		}
 	case eventScore:
 		if l, ok := decodeLyric(data); ok {

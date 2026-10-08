@@ -635,3 +635,56 @@ func TestRenameSequence_KeepsTheTailEvenlyAligned(t *testing.T) {
 		t.Fatal("renaming to the same name changed the descriptor")
 	}
 }
+
+// TestMIDINote_SaveMatchesLogic checks note fields against the bytes Logic
+// wrote when the same change was made to this fixture's first note in Logic.
+func TestMIDINote_SaveMatchesLogic(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		edit func(n *MIDINote)
+		at   int
+		want []byte
+	}{
+		{"release velocity 100", func(n *MIDINote) { n.ReleaseVelocity = 100 }, 16, []byte{0x64, 0x92}},
+		{"channel 5", func(n *MIDINote) { n.Channel = 5 }, 0, []byte{0x94}},
+		{"articulation ID 3", func(n *MIDINote) { n.ArticulationID = 3 }, 14, []byte{0x03}},
+		{"muted", func(n *MIDINote) { n.Muted = true }, 15, []byte{0x10}},
+	} {
+		project := parseFixtureProject(t, "musicxml-roundtrip.logicx")
+		note := project.Sequences[0].Notes[0]
+		c.edit(&note)
+		if err := note.Save(); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := note.Raw[c.at : c.at+len(c.want)]; !slices.Equal(got, c.want) {
+			t.Errorf("%s: bytes %d.. = % x, want % x", c.name, c.at, got, c.want)
+		}
+		got := reparse(t, &project).Sequences[0].Notes
+		if !slices.ContainsFunc(got, func(n MIDINote) bool {
+			return n.Position == note.Position && n.Pitch == note.Pitch && n.Channel == note.Channel &&
+				n.ReleaseVelocity == note.ReleaseVelocity && n.ArticulationID == note.ArticulationID && n.Muted == note.Muted
+		}) {
+			t.Errorf("%s: note not read back", c.name)
+		}
+	}
+}
+
+func TestParseProjectData_NotesOnEveryChannel(t *testing.T) {
+	project := parseFixtureProject(t, "musicxml-roundtrip.logicx")
+	notes := len(project.Sequences[0].Notes)
+	for i, note := range project.Sequences[0].Notes {
+		note.Channel = uint8(i%16 + 1)
+		if err := note.Save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := reparse(t, &project).Sequences[0].Notes
+	if len(got) != notes {
+		t.Fatalf("read back %d notes, want %d", len(got), notes)
+	}
+	for i, note := range got {
+		if note.Channel != uint8(i%16+1) {
+			t.Fatalf("note %d on channel %d, want %d", i, note.Channel, i%16+1)
+		}
+	}
+}

@@ -32,8 +32,13 @@ const (
 	// eventScore covers the positioned score symbols, lyrics and chord events,
 	// which share a type and are told apart by their discriminator at byte 12.
 	eventScore = 0x70
-	eventNote  = 0x90
+	// eventNote is a MIDI note-on status byte: its low four bits hold the
+	// MIDI channel, so a note is any type from 0x90 to 0x9f.
+	eventNote = 0x90
 )
+
+// isNote reports whether an event type is a note on any MIDI channel.
+func isNote(eventType byte) bool { return eventType&0xf0 == eventNote }
 
 // Event is one record of an event sequence. Type is the record's discriminator
 // and Data is the whole record, from its first atom through every atom that
@@ -116,7 +121,7 @@ func (r eventRef) save(what string, fields ...record.Field) error {
 	if err != nil {
 		return fmt.Errorf("logicx: %s: %w", what, err)
 	}
-	r.event.Data = data
+	r.event.Data, r.event.Type = data, data[0]
 	r.chunk.reorder(r.event)
 	return nil
 }

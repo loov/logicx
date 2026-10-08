@@ -59,13 +59,20 @@ type MIDISequence struct {
 // Velocity is the note-on velocity, 1 to 127. It was found from its values
 // across 16,278 notes in 46 projects — always within that range, spread as
 // played velocities are, peaking at Logic's default of 80 — and confirmed by
-// Logic showing a saved velocity in its inspector.
+// Logic showing a saved velocity in its inspector. Channel, ReleaseVelocity,
+// ArticulationID and Muted were each found by changing one note in Logic and
+// comparing the saves. ReleaseVelocity is 0 to 127, and Logic also stores 128,
+// whose meaning is unknown.
 type MIDINote struct {
 	Position           uint32
 	SourcePosition     uint32
 	PositionFraction   uint16
 	Pitch              uint8
 	Velocity           uint8
+	Channel            uint8
+	ReleaseVelocity    uint8
+	ArticulationID     uint8
+	Muted              bool
 	Duration           uint32
 	SourceDuration     uint32
 	Lyrics             []Lyric
@@ -76,6 +83,9 @@ type MIDINote struct {
 	ScoreSlurs         []ScoreSlur
 	Raw                [32]byte
 	ref                eventRef
+	// flags holds byte 15: 0x10 is Muted, 0x80 marks a selected note, and
+	// 0x01 and 0x04 are not understood.
+	flags uint8
 }
 
 // Lyric is a score lyric attached to a MIDI note. Verse is zero when Logic
@@ -495,7 +505,7 @@ func findMIDINotes(chunk *Chunk) []MIDINote {
 			}
 			continue
 		}
-		if event.Type != eventNote {
+		if !isNote(event.Type) {
 			continue
 		}
 		note, ok := decodeMIDINote(event.Data)
@@ -555,39 +565,71 @@ func scorePositionAtOrBefore(position uint32, fraction uint16, note MIDINote) bo
 // decodeMIDINote decodes a 32-byte note-on record.
 func decodeMIDINote(data []byte) (MIDINote, bool) {
 	var note MIDINote
-	if !record.Decode(data, append(note.fields(), record.Copy(0, note.Raw[:]))...) || note.Pitch > 127 {
+	var status, release uint8
+	if !record.Decode(data, append(note.fields(&status, &release), record.Copy(0, note.Raw[:]))...) ||
+		!isNote(status) || note.Pitch > 127 {
 		return MIDINote{}, false
 	}
+	note.Channel = status&0x0f + 1
+	note.Muted = note.flags&noteMuted != 0
 	note.Position, note.Duration = note.SourcePosition, note.SourceDuration
 	return note, true
 }
 
-// fields is the layout of a note record.
-func (n *MIDINote) fields() []record.Field {
+// noteMuted is the flag of a muted note.
+const noteMuted = 0x10
+
+// fields is the layout of a note record. status is the MIDI status byte,
+// which holds the channel, and release the release velocity widened to eight
+// bits, which Logic stores beside it.
+func (n *MIDINote) fields(status, release *uint8) []record.Field {
 	return []record.Field{
-		record.Equal(0, 0x90),
+		record.Uint8(0, status),
 		record.Uint16LE(2, &n.PositionFraction),
 		record.Uint32LE(4, &n.SourcePosition),
 		record.Uint8(11, &n.Velocity),
 		record.Uint8(12, &n.Pitch),
-		// Bytes 14..22 and 26..27 carry per-note values such as tuning, which
-		// Melodyne transcriptions fill in; only the record markers are fixed.
 		record.Equal(13, 0),
+		record.Uint8(14, &n.ArticulationID),
+		record.Uint8(15, &n.flags),
+		record.Uint8(16, &n.ReleaseVelocity),
+		record.Uint8(17, release),
+		// Bytes 18..22 and 26..27 carry per-note values such as tuning, which
+		// Melodyne transcriptions fill in; only the record markers are fixed.
 		record.Equal(23, 0x89, 0, 0),
 		record.Uint32LE(28, &n.SourceDuration),
 	}
 }
 
-// Save writes n's pitch, velocity, source position and duration into the record
+// widenRelease returns the eight-bit form of a release velocity that Logic
+// stores beside it: the part above 64, widened from six bits by repeating its
+// top bits, and zero for 64 and below. It holds for all 18,051 notes in 278
+// projects.
+func widenRelease(velocity uint8) uint8 {
+	if velocity <= 64 || velocity > 127 {
+		return 0
+	}
+	v := velocity - 64
+	return v<<2 | v>>4
+}
+
+// Save writes n's pitch, velocity, release velocity, channel, articulation ID,
+// muting, source position and duration into the record
 // it was decoded from, keeping the bytes this package does not decode, and
 // moves the record when its position changed. Attached symbols are saved on
 // their own. The project's sequences are not updated; see
 // [ProjectData.Refresh].
 func (n *MIDINote) Save() error {
-	if n.Pitch > 127 || n.Velocity < 1 || n.Velocity > 127 {
-		return fmt.Errorf("logicx: note pitch %d or velocity %d out of range", n.Pitch, n.Velocity)
+	if n.Pitch > 127 || n.Velocity < 1 || n.Velocity > 127 || n.ReleaseVelocity > 128 || n.Channel < 1 || n.Channel > 16 {
+		return fmt.Errorf("logicx: note pitch %d, velocity %d, release velocity %d or channel %d out of range",
+			n.Pitch, n.Velocity, n.ReleaseVelocity, n.Channel)
 	}
-	if err := n.ref.save("note", n.fields()...); err != nil {
+	status, release := eventNote|(n.Channel-1), widenRelease(n.ReleaseVelocity)
+	n.flags &^= noteMuted
+	if n.Muted {
+		n.flags |= noteMuted
+	}
+	if err := n.ref.save("note", n.fields(&status, &release)...); err != nil {
 		return err
 	}
 	copy(n.Raw[:], n.ref.event.Data)
