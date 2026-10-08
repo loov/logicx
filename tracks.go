@@ -85,11 +85,24 @@ type Track struct {
 	Mute            bool
 	Solo            bool
 	InputMonitoring bool
-	Instrument      *AudioUnit
-	MIDIFX          []AudioUnit
-	AudioFX         []AudioUnit
-	strip           uint16
-	chunk           *Chunk
+	// Output is where the strip is routed: 0 is Stereo Out and n is Bus n;
+	// Output 3-4 was seen as -2. Save does not write it, since the strip
+	// also refers to its destination's environment object.
+	Output int16
+	// Input is an aux's input bus, or -1 for none. Save does not write it.
+	Input int16
+	// Color is the track's color code, which counts through Logic's palette
+	// from its 74th entry; see [Track.PaletteColor]. It is stored in the
+	// strip's environment object, and is zero when the strip has none.
+	Color      uint8
+	Sends      []Send
+	Instrument *AudioUnit
+	MIDIFX     []AudioUnit
+	AudioFX    []AudioUnit
+	strip      uint16
+	chunk      *Chunk
+	// environment is the strip's environment object, which holds its color.
+	environment *Chunk
 	// mixer reports whether the strip is long enough to hold the mixer
 	// settings.
 	mixer bool
@@ -106,6 +119,8 @@ const (
 	channelStripSolo     = 88 // 0x01 is solo
 	channelStripPan      = 89 // 64 is center
 	channelStripMute     = 90 // 0x01 is mute; 0x02 is muted by another's solo
+	channelStripOutput   = 92
+	channelStripInput    = 94
 	channelStripVolume   = 116
 	channelStripMixerEnd = channelStripVolume + 4
 )
@@ -133,9 +148,133 @@ func (t *Track) VolumeDB() float64 {
 }
 
 // SetVolumeDB sets the fader level in decibels, limited to Logic's range.
-func (t *Track) SetVolumeDB(db float64) {
+func (t *Track) SetVolumeDB(db float64) { t.Volume = volumeFromDB(db) }
+
+func volumeFromDB(db float64) uint32 {
 	v := math.Round(unityVolume * math.Pow(10, db/40))
-	t.Volume = uint32(min(max(v, 0), 127<<24))
+	return uint32(min(max(v, 0), 127<<24))
+}
+
+// Logic's color palette has 4 rows of 24 colors, which the color codes count
+// through row by row, starting at the code paletteFirst in the top left.
+const (
+	paletteColumns = 24
+	paletteSize    = 4 * paletteColumns
+	paletteFirst   = 73
+	// environmentColor is where an environment object holds its color.
+	environmentColor = 155
+)
+
+// PaletteColor returns the row and column of t's color in Logic's color
+// palette, counted from zero at the top left.
+func (t *Track) PaletteColor() (row, column int) {
+	i := (int(t.Color) + paletteSize - paletteFirst) % paletteSize
+	return i / paletteColumns, i % paletteColumns
+}
+
+// SetPaletteColor sets t's color to the one at row and column of Logic's
+// color palette, counted from zero at the top left.
+func (t *Track) SetPaletteColor(row, column int) {
+	t.Color = uint8((row*paletteColumns + column + paletteFirst) % paletteSize)
+}
+
+// Send is one of a channel strip's sends, a plug-in chunk of its own.
+type Send struct {
+	// Index is the send's slot on the strip, from zero.
+	Index uint8
+	// Bus is the bus it sends to. Save does not write it, since the send
+	// also refers to its destination's environment object.
+	Bus uint8
+	// Level is the send level on the volume fader's scale; see
+	// [Track.Volume]. Sends left at 0 dB were seen saved as zero.
+	Level uint32
+	// Pan runs from -64, fully left, to 63, fully right.
+	Pan      int8
+	PreFader bool
+	chunk    *Chunk
+}
+
+// Within a send's chunk. As with the fader, the level is stored twice.
+const (
+	sendIndex   = 6
+	sendPost    = 16
+	sendLevel7  = 17
+	sendPre     = 18
+	sendBus     = 20 // the bus number plus one
+	sendLevel   = 24
+	sendPan     = 28 // 64 is center
+	sendMinimum = sendPan + 1
+	chainSend   = 0
+)
+
+// fields is the layout of a send; level7, pan and post hold the stored forms
+// of Level's whole part, of Pan, and of the post-fader flag.
+func (s *Send) fields(level7, pan *uint8, post *bool) []record.Field {
+	return []record.Field{
+		record.Bit(sendPost, 0x01, post),
+		record.Uint8(sendLevel7, level7),
+		record.Bit(sendPre, 0x01, &s.PreFader),
+		record.Uint8(sendPan, pan),
+		record.Uint32LE(sendLevel, &s.Level),
+	}
+}
+
+// findSends decodes the sends in chunks by the strip they belong to.
+func findSends(chunks []*Chunk) map[uint16][]Send {
+	sends := make(map[uint16][]Send)
+	for _, chunk := range chunks {
+		if chunk.Type != pluginChunk || !bytes.Equal(chunk.Header[4:8], pluginVariant) ||
+			len(chunk.Data) < sendMinimum || binary.LittleEndian.Uint16(chunk.Data[pluginChainOffset:]) != chainSend {
+			continue
+		}
+		s := Send{Index: chunk.Data[sendIndex], Bus: chunk.Data[sendBus] - 1, chunk: chunk}
+		var level7, pan uint8
+		var post bool
+		record.Decode(chunk.Data, s.fields(&level7, &pan, &post)...)
+		s.Pan = int8(pan - 64)
+		strip := binary.LittleEndian.Uint16(chunk.Header[14:])
+		sends[strip] = append(sends[strip], s)
+	}
+	return sends
+}
+
+// Save writes s's level, pan and pre-fader setting into the chunk it was
+// decoded from. ProjectData.Tracks is not updated; see [ProjectData.Refresh].
+func (s *Send) Save() error {
+	if s.chunk == nil {
+		return errors.New("logicx: send was not decoded from a project")
+	}
+	if s.Level > 127<<24 || s.Pan < -64 {
+		return fmt.Errorf("logicx: send level %#x or pan %d out of range", s.Level, s.Pan)
+	}
+	level7, pan, post := uint8(s.Level>>24), uint8(s.Pan+64), !s.PreFader
+	data, err := record.Encode(s.chunk.Data, s.fields(&level7, &pan, &post)...)
+	if err != nil {
+		return fmt.Errorf("logicx: send %d: %w", s.Index, err)
+	}
+	s.chunk.Data = data
+	return nil
+}
+
+// stripEnvironment finds the environment object of a channel strip: the
+// strip holds the ID that ends each object, its own first and then those of
+// the objects it routes to.
+func stripEnvironment(strip []byte, objects []*Chunk) *Chunk {
+	var own *Chunk
+	first := len(strip)
+	for _, object := range objects {
+		if len(object.Data) <= environmentColor+16 {
+			continue
+		}
+		id := object.Data[len(object.Data)-16:]
+		if allZero(id) {
+			continue
+		}
+		if at := bytes.Index(strip, id); at >= 0 && at < first {
+			own, first = object, at
+		}
+	}
+	return own
 }
 
 // Plug-in instances are stored one per chunk, sharing a chunk type with other
@@ -245,6 +384,13 @@ var channelStripVariant = []byte{0x07, 0x00, 0x0e, 0x00}
 // relies on.
 func findTracks(chunks []*Chunk) []Track {
 	var tracks []Track
+	sends := findSends(chunks)
+	var objects []*Chunk
+	for _, chunk := range chunks {
+		if chunk.Type == environmentChunk {
+			objects = append(objects, chunk)
+		}
+	}
 	for _, chunk := range chunks {
 		if chunk.Type != channelStripChunk ||
 			!bytes.Equal(chunk.Header[channelStripHeaderStart:channelStripHeaderStart+4], channelStripVariant) ||
@@ -276,6 +422,13 @@ func findTracks(chunks []*Chunk) []Track {
 			var volume7, pan uint8
 			record.Decode(chunk.Data, track.mixerFields(&volume7, &pan)...)
 			track.Pan, track.mixer = int8(pan-64), true
+			track.Output = int16(binary.LittleEndian.Uint16(chunk.Data[channelStripOutput:]))
+			track.Input = int16(binary.LittleEndian.Uint16(chunk.Data[channelStripInput:]))
+		}
+		track.Sends = sends[track.strip]
+		slices.SortFunc(track.Sends, func(a, b Send) int { return cmp.Compare(a.Index, b.Index) })
+		if track.environment = stripEnvironment(chunk.Data, objects); track.environment != nil {
+			track.Color = track.environment.Data[environmentColor]
 		}
 		tracks = append(tracks, track)
 	}
@@ -290,8 +443,10 @@ const (
 )
 
 // Save writes t's mixer settings, and its name when it was changed, into the
-// channel strip it was decoded from. Kind and Active are not written.
-// ProjectData.Tracks is not updated; see [ProjectData.Refresh].
+// channel strip it was decoded from, and its color into the strip's
+// environment object. Kind, Active, Output and Input are not written, nor
+// are the sends; see [Send.Save]. ProjectData.Tracks is not updated; see
+// [ProjectData.Refresh].
 func (t *Track) Save() error {
 	if t.chunk == nil {
 		return errors.New("logicx: track was not decoded from a project")
@@ -313,6 +468,12 @@ func (t *Track) Save() error {
 	data, err := record.Encode(t.chunk.Data, fields...)
 	if err != nil {
 		return fmt.Errorf("logicx: track %q: %w", t.Name, err)
+	}
+	if t.environment != nil {
+		if t.Color >= paletteSize {
+			return fmt.Errorf("logicx: track %q: color %d out of range", t.Name, t.Color)
+		}
+		t.environment.Data[environmentColor] = t.Color
 	}
 	t.chunk.Data, t.name = data, t.Name
 	return nil

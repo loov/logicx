@@ -94,6 +94,9 @@ func saveAll(t *testing.T, p *ProjectData) {
 	for i := range p.Tracks {
 		p.Tracks[i].name = ""
 		add(p.Tracks[i].Save)
+		for j := range p.Tracks[i].Sends {
+			add(p.Tracks[i].Sends[j].Save)
+		}
 	}
 	for i := range p.AudioUnits {
 		add(p.AudioUnits[i].Save)
@@ -160,6 +163,9 @@ func everySave(p *ProjectData) []func() error {
 	}
 	for i := range p.Tracks {
 		saves = append(saves, p.Tracks[i].Save)
+		for j := range p.Tracks[i].Sends {
+			saves = append(saves, p.Tracks[i].Sends[j].Save)
+		}
 	}
 	for i := range p.AudioUnits {
 		saves = append(saves, p.AudioUnits[i].Save)
@@ -878,3 +884,82 @@ func TestTrack_SetVolumeDB(t *testing.T) {
 		t.Errorf("+20 dB = %#x, want Logic's maximum", track.Volume)
 	}
 }
+
+func TestTrack_DecodesRoutingAndColor(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-routing.logicx")
+	for name, want := range map[string]int16{"Inst 1": 1, "Inst 2": 3, "Inst 3": -2, "Inst 4": 0} {
+		if got := trackNamed(t, &p, name).Output; got != want {
+			t.Errorf("%s output = %d, want %d", name, got, want)
+		}
+	}
+	for name, want := range map[string]int16{"Aux 1": 1, "Aux 2": 3, "Inst 1": -1} {
+		if got := trackNamed(t, &p, name).Input; got != want {
+			t.Errorf("%s input = %d, want %d", name, got, want)
+		}
+	}
+	for name, want := range map[string][2]int{"Inst 7": {0, 0}, "Inst 8": {3, 23}, "Inst 9": {1, 8}} {
+		if row, column := trackNamed(t, &p, name).PaletteColor(); row != want[0] || column != want[1] {
+			t.Errorf("%s color at %d,%d, want %v", name, row, column, want)
+		}
+	}
+}
+
+func TestSend_DecodesWhatLogicSet(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-routing.logicx")
+	type send struct {
+		Index, Bus uint8
+		DB         float64
+		PreFader   bool
+	}
+	want := map[string][]send{
+		// Sends left at 0 dB were saved with a level of zero.
+		"Inst 4": {{0, 1, math.Inf(-1), false}},
+		"Inst 5": {{0, 4, -10, false}, {1, 5, -20, false}},
+		"Inst 6": {{0, 1, math.Inf(-1), true}},
+		"Inst 7": nil,
+	}
+	for name, sends := range want {
+		var got []send
+		for _, s := range trackNamed(t, &p, name).Sends {
+			db := math.Round(40*math.Log10(float64(s.Level)/unityVolume)*1e6) / 1e6
+			got = append(got, send{s.Index, s.Bus, db, s.PreFader})
+		}
+		if !slices.Equal(got, sends) {
+			t.Errorf("%s sends = %v, want %v", name, got, sends)
+		}
+	}
+}
+
+func TestSend_Save(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-routing.logicx")
+	send := &trackNamed(t, &p, "Inst 5").Sends[0]
+	send.Level, send.Pan, send.PreFader = volumeFromDB(-3), -10, true
+	if err := send.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := trackNamed(t, ptr(reparse(t, &p)), "Inst 5").Sends[0]
+	if got.Level != volumeFromDB(-3) || got.Pan != -10 || !got.PreFader || got.Bus != 4 {
+		t.Fatalf("send = %+v", got)
+	}
+	if d := got.chunk.Data; d[sendLevel7] != uint8(got.Level>>24) || d[sendPost] != 0 {
+		t.Fatalf("send record % x", d[:sendMinimum])
+	}
+}
+
+func TestTrack_SaveColor(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-base.logicx")
+	logic := parseFixtureProject(t, "mixer-routing.logicx")
+	track := trackNamed(t, &p, "Inst 8")
+	track.SetPaletteColor(3, 23)
+	if err := track.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := track.environment.Data[environmentColor], trackNamed(t, &logic, "Inst 8").Color; got != want {
+		t.Fatalf("color = %d, Logic saved %d", got, want)
+	}
+	if got := trackNamed(t, ptr(reparse(t, &p)), "Inst 8").Color; got != track.Color {
+		t.Fatalf("reparsed color = %d", got)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
