@@ -208,7 +208,8 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 		return "sequence", fields
 	case "TxSq":
 		if start := bytes.Index(d, []byte(`{\rtf`)); start >= 0 {
-			return "marker text", []record.Field{record.Copy(start, make([]byte, len(d)-start))}
+			var size, at, repeated uint32
+			return "marker text", append(markerTextFields(&size, &at, &repeated), record.Copy(start, make([]byte, len(d)-start)))
 		}
 	}
 	return chunk.Type, nil

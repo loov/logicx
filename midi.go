@@ -227,6 +227,10 @@ type Marker struct {
 	RTF      string
 	Raw      [48]byte
 	ref      eventRef
+	// text is the chunk holding the marker's text, and name Name as decoded,
+	// so that Save rewrites the text only when Name changed.
+	text *Chunk
+	name string
 }
 
 // sequenceSource is a decoded event sequence before arrangement links place
@@ -1155,11 +1159,10 @@ func (s *MIDISequence) Save() error {
 // findMarkers decodes global markers and resolves their text, sorted by
 // position.
 func findMarkers(chunks []*Chunk) []Marker {
-	texts := make(map[uint32]string)
+	texts := make(map[uint32]*Chunk)
 	for _, chunk := range chunks {
 		if chunk.Type == "TxSq" {
-			textID := binary.LittleEndian.Uint32(chunk.Header[10:14])
-			texts[textID] = markerRTF(chunk.Data)
+			texts[binary.LittleEndian.Uint32(chunk.Header[10:14])] = chunk
 		}
 	}
 
@@ -1180,17 +1183,19 @@ func findMarkers(chunks []*Chunk) []Marker {
 
 // markerDecoder returns a decoder for marker records that resolves each
 // marker's text through texts, rejecting markers whose text is missing.
-func markerDecoder(texts map[uint32]string) func([]byte) (Marker, bool) {
+func markerDecoder(texts map[uint32]*Chunk) func([]byte) (Marker, bool) {
 	return func(data []byte) (Marker, bool) {
 		var marker Marker
 		if !record.Decode(data, append(marker.fields(), record.Copy(0, marker.Raw[:]))...) {
 			return Marker{}, false
 		}
-		rtf, ok := texts[marker.TextID]
+		text, ok := texts[marker.TextID]
 		if !ok {
 			return Marker{}, false
 		}
-		marker.Name, marker.RTF = plainRTF(rtf), rtf
+		marker.RTF = markerRTF(text.Data)
+		marker.Name = plainRTF(marker.RTF)
+		marker.text, marker.name = text, marker.Name
 		return marker, true
 	}
 }
@@ -1208,15 +1213,74 @@ func (m *Marker) fields() []record.Field {
 
 // Save writes m's position, length and text reference into the record it was
 // decoded from, keeping the bytes this package does not decode, and moves the
-// record when its position changed. The text is held in a separate chunk, so
-// Name and RTF are not written. ProjectData.Markers is not updated; see
-// [ProjectData.Refresh].
+// record when its position changed. A changed Name is written into the text
+// chunk, in place of the old name within its RTF; every marker sharing the
+// text is renamed. RTF is not written. ProjectData.Markers is not updated;
+// see [ProjectData.Refresh].
 func (m *Marker) Save() error {
+	var text []byte
+	if m.Name != m.name {
+		if m.text == nil {
+			return errors.New("logicx: marker has no text to rename")
+		}
+		var err error
+		if text, err = renameMarkerText(m.text.Data, m.name, m.Name); err != nil {
+			return err
+		}
+	}
 	if err := m.ref.save("marker", m.fields()...); err != nil {
 		return err
 	}
 	copy(m.Raw[:], m.ref.event.Data)
+	if text != nil {
+		m.text.Data, m.name = text, m.Name
+		m.RTF = markerRTF(text)
+	}
 	return nil
+}
+
+// markerTextStart is where the RTF begins in a marker text chunk. The
+// chunk's payload length is stored at byte 0 and again at byte 20, and the
+// RTF's start at byte 16.
+const markerTextStart = 98
+
+// markerTextFields is the layout of a marker text chunk ahead of its RTF.
+func markerTextFields(size, start, repeated *uint32) []record.Field {
+	return []record.Field{record.Uint32LE(0, size), record.Uint32LE(16, start), record.Uint32LE(20, repeated)}
+}
+
+// rtfEscape escapes the characters RTF treats specially.
+var rtfEscape = strings.NewReplacer(`\`, `\\`, `{`, `\{`, `}`, `\}`)
+
+// renameMarkerText returns a marker text chunk's payload with the name old
+// replaced by name within its RTF, refusing when the layout or the old name
+// is not as expected or the result would not read back as name.
+func renameMarkerText(data []byte, old, name string) ([]byte, error) {
+	var size, start, repeated uint32
+	if !record.Decode(data, markerTextFields(&size, &start, &repeated)...) ||
+		int(size) != len(data) || repeated != size || start != markerTextStart ||
+		!bytes.HasPrefix(data[start:], []byte(`{\rtf`)) {
+		return nil, errors.New("logicx: marker text chunk layout not recognized")
+	}
+	if name == "" || strings.TrimSpace(name) != name || !printable([]byte(name)) {
+		return nil, fmt.Errorf("logicx: marker name %q is not trimmed, non-empty printable ASCII", name)
+	}
+	escaped := []byte(rtfEscape.Replace(old))
+	at := bytes.LastIndex(data[start:], escaped)
+	if old == "" || at < 0 {
+		return nil, fmt.Errorf("logicx: marker name %q not found in its text", old)
+	}
+	at += int(start)
+	out := slices.Concat(data[:at], []byte(rtfEscape.Replace(name)), data[at+len(escaped):])
+	size = uint32(len(out))
+	out, err := record.Encode(out, markerTextFields(&size, &start, &size)...)
+	if err != nil {
+		return nil, err
+	}
+	if got := plainRTF(markerRTF(out)); got != name {
+		return nil, fmt.Errorf("logicx: renamed marker text reads back as %q", got)
+	}
+	return out, nil
 }
 
 // Delete removes m's record from the project. The text chunk it refers to is

@@ -480,3 +480,28 @@ func TestMIDISequence_SaveMovesRenamesAndLoops(t *testing.T) {
 		t.Fatal("Save() moved a region whose source other regions place")
 	}
 }
+
+func TestMarker_SaveRenamesThroughItsText(t *testing.T) {
+	project := parseFixtureProject(t, "chords.logicx")
+	if len(project.Markers) == 0 {
+		t.Fatal("no markers")
+	}
+	marker := project.Markers[0]
+	marker.Name = `Verse {2} \ end`
+	if err := marker.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reread := reparse(t, &project)
+	if got := reread.Markers[0]; got.Name != marker.Name || got.Position != marker.Position {
+		t.Fatalf("marker = %q at %d, want %q", got.Name, got.Position, marker.Name)
+	}
+	for _, other := range reread.Markers[1:] {
+		if other.TextID != marker.TextID && other.Name == marker.Name {
+			t.Fatalf("marker %d renamed too", other.TextID)
+		}
+	}
+	marker.Name = "Grüße"
+	if err := marker.Save(); err == nil {
+		t.Fatal("Save() accepted a marker name RTF decoding cannot read back")
+	}
+}
