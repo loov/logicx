@@ -87,7 +87,7 @@ func TestOpenBundle_ParsesBinaryMetadataAndInstrument(t *testing.T) {
 func TestParseProjectData_ParsesMIDINotes(t *testing.T) {
 	data := make([]byte, 24)
 	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})
-	data = appendChunk(data, "qeSM", []byte("header\x00Lead Trumpet"))
+	data = appendChunk(data, "qeSM", sequenceDescriptor("Lead Trumpet"))
 	data = appendChunk(data, "karT", nil)
 
 	events := make([]byte, 48)
@@ -607,6 +607,15 @@ func appendAudioChunk(data []byte, descriptor string, variant []byte, strip uint
 	binary.LittleEndian.PutUint16(header[14:], strip)
 	binary.LittleEndian.PutUint64(header[28:], uint64(len(payload)))
 	return append(append(data, header...), payload...)
+}
+
+// sequenceDescriptor returns an MSeq payload naming a region: 16 bytes, the
+// name's length and the name, and a 278-byte tail.
+func sequenceDescriptor(name string) []byte {
+	d := make([]byte, 16, 16+2+len(name)+278)
+	d = binary.LittleEndian.AppendUint16(d, uint16(len(name)))
+	d = append(d, name...)
+	return append(d, make([]byte, 278)...)
 }
 
 func appendChunk(data []byte, descriptor string, payload []byte) []byte {

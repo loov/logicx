@@ -201,13 +201,10 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 		if len(d) >= sequenceMetadataTail {
 			fields = append(fields, record.Uint32LE(len(d)-sequenceMetadataTail, new(uint32)))
 		}
-		if len(d) >= 55 {
-			fields = append(fields, record.Uint32LE(len(d)-55, new(uint32)))
+		if len(d) >= sequenceOffsetTail {
+			fields = append(fields, record.Uint32LE(len(d)-sequenceOffsetTail, new(uint32)))
 		}
-		if runs := printableRun.FindAllIndex(d, -1); len(runs) != 0 {
-			last := runs[len(runs)-1]
-			fields = append(fields, record.Copy(last[0], make([]byte, last[1]-last[0])))
-		}
+		fields = append(fields, record.String16(sequenceNameLength, new(string)))
 		return "sequence", fields
 	case "TxSq":
 		if start := bytes.Index(d, []byte(`{\rtf`)); start >= 0 {

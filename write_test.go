@@ -55,6 +55,7 @@ func saveAll(t *testing.T, p *ProjectData) {
 	}
 	for i := range p.Sequences {
 		s := &p.Sequences[i]
+		add(s.Save)
 		for j := range s.Chords {
 			add(s.Chords[j].Save)
 		}
@@ -432,4 +433,50 @@ func TestLibrary_RoundTrips(t *testing.T) {
 		}
 	}
 	t.Logf("checked %d projects", len(paths))
+}
+
+func TestMIDISequence_SaveMovesRenamesAndLoops(t *testing.T) {
+	project := parseFixtureProject(t, "musicxml-roundtrip.logicx")
+	region := project.Sequences[0]
+	notes := len(region.Notes)
+	first := region.Notes[0].Position
+	region.Name = "Väike Lind"
+	region.Position += 3840
+	if err := region.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := reparse(t, &project).Sequences[0]
+	if got.Name != region.Name || got.Position != region.Position || len(got.Notes) != notes || got.Notes[0].Position != first+3840 {
+		t.Fatalf("region = %q at %d with %d notes, first at %d", got.Name, got.Position, len(got.Notes), got.Notes[0].Position)
+	}
+
+	region.Looped, region.Duration = true, 2*region.SourceDuration
+	if err := region.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got = reparse(t, &project).Sequences[0]
+	if !got.Looped || got.Duration != region.Duration || len(got.Notes) != 2*notes {
+		t.Fatalf("looped region lasts %d (looped %v) with %d notes, want %d with %d", got.Duration, got.Looped, len(got.Notes), region.Duration, 2*notes)
+	}
+
+	region.Looped = false
+	if err := region.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reparse(t, &project).Sequences[0]; got.Looped || len(got.Notes) != notes {
+		t.Fatalf("unlooped region looped %v with %d notes", got.Looped, len(got.Notes))
+	}
+
+	region.Position = 0
+	if err := region.Save(); err == nil {
+		t.Fatal("Save() accepted a region before the project start")
+	}
+
+	// Moving one of several regions placing a source would move them all.
+	region = reparse(t, &project).Sequences[0]
+	region.shared = true
+	region.Position += 960
+	if err := region.Save(); err == nil {
+		t.Fatal("Save() moved a region whose source other regions place")
+	}
 }

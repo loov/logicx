@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -17,6 +18,13 @@ import (
 
 // MIDISequence is an active MIDI region discovered in ProjectData. Position
 // and Duration are its arrangement bounds; looped events are expanded.
+//
+// A region places a source sequence, whose name and length (SourceDuration)
+// are stored once for every region that places it. A looped region's
+// Duration is its loop length; an unlooped one lasts SourceDuration. The
+// source's events keep their positions when a region moves: a shift stored
+// with the source follows the region instead, so a source placed by several
+// regions cannot move with just one of them.
 type MIDISequence struct {
 	Name           string
 	ChunkOffset    int
@@ -27,6 +35,16 @@ type MIDISequence struct {
 	Looped         bool
 	Notes          []MIDINote
 	Chords         []Chord
+	descriptor     *Chunk
+	// name is Name as decoded, so that Save writes it only when changed.
+	name string
+	// link is the arrangement locator placing the region, linkDuration its
+	// stored loop length and position the region's position as decoded.
+	// shared is set when other locators place the same source.
+	link         eventRef
+	linkDuration uint32
+	position     uint32
+	shared       bool
 }
 
 // MIDINote contains the stable fields of Logic's 32-byte note record.
@@ -215,6 +233,7 @@ type Marker struct {
 // it. Its positions are relative to the source sequence, not the project.
 type sequenceSource struct {
 	id             chordSequenceID
+	descriptor     *Chunk
 	name           string
 	chunkOffset    int
 	duration       uint32
@@ -256,7 +275,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 			continue
 		}
 		s := sequenceSource{
-			id: id, name: sequenceName(descriptor.Data), chunkOffset: chunk.Offset,
+			id: id, descriptor: descriptor, name: sequenceName(descriptor.Data), chunkOffset: chunk.Offset,
 			duration: sequenceDuration(descriptor.Data), positionOffset: sequencePositionOffset(descriptor.Data),
 			notes: notes, chords: chords,
 		}
@@ -276,7 +295,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 		if !ok || sequenceName(descriptor.Data) == "Global Harmonies" {
 			continue
 		}
-		for _, link := range decodeRegionLinks(event.Events) {
+		for _, link := range decodeRegionLinks(event) {
 			s, ok := sources[chordSequenceID{group: id.group, sequence: link.sequence}]
 			if !ok {
 				continue
@@ -286,6 +305,13 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 				sequences = append(sequences, sequence)
 			}
 		}
+	}
+	placements := make(map[uint32]int)
+	for _, s := range sequences {
+		placements[s.SequenceID]++
+	}
+	for i := range sequences {
+		sequences[i].shared = placements[sequences[i].SequenceID] > 1
 	}
 	if len(sequences) != 0 {
 		slices.SortFunc(sequences, func(a, b MIDISequence) int {
@@ -300,6 +326,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 		sequences = append(sequences, MIDISequence{
 			Name: s.name, ChunkOffset: s.chunkOffset, SequenceID: s.id.sequence,
 			Duration: s.duration, SourceDuration: s.duration, Notes: s.notes, Chords: s.chords,
+			descriptor: s.descriptor, name: s.name,
 		})
 	}
 	return sequences
@@ -322,14 +349,18 @@ func sequenceDuration(data []byte) uint32 {
 	return binary.LittleEndian.Uint32(data[len(data)-sequenceMetadataTail:])
 }
 
+// sequenceOffsetTail is the offset of the position shift counted back from
+// the end of an MSeq payload.
+const sequenceOffsetTail = 55
+
 // sequencePositionOffset returns the signed shift between a source sequence's
-// event positions and its placed position, which is non-zero for cropped
-// regions.
+// event positions and its placed position. Logic leaves events where they are
+// when a region moves or is cropped, and changes this instead.
 func sequencePositionOffset(data []byte) int32 {
-	if len(data) < 55 {
+	if len(data) < sequenceOffsetTail {
 		return 0
 	}
-	return int32(binary.LittleEndian.Uint32(data[len(data)-55:]))
+	return int32(binary.LittleEndian.Uint32(data[len(data)-sequenceOffsetTail:]))
 }
 
 // regionLink places a source sequence on the arrangement timeline.
@@ -337,16 +368,18 @@ type regionLink struct {
 	position uint32
 	duration uint32
 	sequence uint32
+	ref      eventRef
 }
 
 // decodeRegionLinks decodes the arrangement locators of one sequence.
-func decodeRegionLinks(events []*Event) []regionLink {
+func decodeRegionLinks(chunk *Chunk) []regionLink {
 	var links []regionLink
-	for _, event := range events {
+	for _, event := range chunk.Events {
 		if event.Type != eventLink {
 			continue
 		}
 		if link, ok := decodeRegionLink(event.Data); ok {
+			link.ref = eventRef{chunk, event}
 			links = append(links, link)
 		}
 	}
@@ -395,6 +428,7 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 	sequence := MIDISequence{
 		Name: s.name, ChunkOffset: s.chunkOffset, SequenceID: s.id.sequence,
 		Position: position, Duration: duration, SourceDuration: s.duration, Looped: looped,
+		descriptor: s.descriptor, name: s.name, link: link.ref, linkDuration: link.duration, position: position,
 	}
 	for repeat := uint32(0); repeat < repeats; repeat++ {
 		baseShift := int64(s.positionOffset)
@@ -1038,13 +1072,84 @@ func (l *Lyric) Duplicate() (Lyric, error) {
 	return copied, err
 }
 
-// sequenceName returns the region name stored at the end of an MSeq payload.
+// sequenceNameLength is where an MSeq payload stores its region name: a
+// two-byte length, then the name in UTF-8. The fixed-size tail follows the
+// name after up to two bytes of padding, so the tail's fields are addressed
+// from the payload's end.
+const sequenceNameLength = 16
+
+// sequenceName returns the region name of an MSeq payload.
 func sequenceName(data []byte) string {
-	runs := printableRun.FindAll(data, -1)
-	if len(runs) == 0 {
+	var name string
+	if !record.Decode(data, record.String16(sequenceNameLength, &name)) || strings.TrimSpace(name) == "" {
 		return "MIDI Sequence"
 	}
-	return strings.TrimSpace(string(runs[len(runs)-1]))
+	return strings.TrimSpace(name)
+}
+
+// Save writes s's name and source length into the descriptor of its source
+// sequence, and its position and loop length into the arrangement locator
+// that places it. The name and length are shared by every region placing the
+// same source. A sequence found without arrangement locators saves only its
+// name and length. Notes and chords are saved on their own. The project's
+// sequences are not updated; see [ProjectData.Refresh].
+func (s *MIDISequence) Save() error {
+	if s.descriptor == nil || len(s.descriptor.Data) < sequenceMetadataTail {
+		return errors.New("logicx: sequence was not decoded from a project")
+	}
+	var link regionLink
+	if s.link.event != nil {
+		if err := s.link.check("region"); err != nil {
+			return err
+		}
+		if s.Position < projectChordPositionBias {
+			return fmt.Errorf("logicx: region position %d precedes the project start", s.Position)
+		}
+		if s.Position != s.position && s.shared {
+			return fmt.Errorf("logicx: region %q places a source other regions place too, so it cannot move alone", s.Name)
+		}
+		link = regionLink{position: s.Position - projectChordPositionBias, duration: s.linkDuration, sequence: s.SequenceID}
+		switch {
+		case s.Looped && (s.Duration == 0 || s.Duration == noRegionLoop):
+			return fmt.Errorf("logicx: loop length %d is not valid", s.Duration)
+		case s.Looped:
+			link.duration = s.Duration
+		case link.duration != 0 && link.duration != noRegionLoop:
+			link.duration = noRegionLoop
+		}
+	}
+
+	data := s.descriptor.Data
+	if s.Name != s.name {
+		var err error
+		if data, err = record.Encode(data, record.String16(sequenceNameLength, &s.Name)); err != nil {
+			return fmt.Errorf("logicx: region %q: %w", s.Name, err)
+		}
+	}
+	fields := []record.Field{record.Uint32LE(len(data)-sequenceMetadataTail, &s.SourceDuration)}
+	if s.link.event != nil && s.Position != s.position {
+		// The source's events stay put; the shift that places them follows
+		// the region.
+		shift := int64(sequencePositionOffset(data)) + int64(s.Position) - int64(s.position)
+		if shift < math.MinInt32 || shift > math.MaxInt32 {
+			return fmt.Errorf("logicx: region %q moved too far", s.Name)
+		}
+		stored := uint32(int32(shift))
+		fields = append(fields, record.Uint32LE(len(data)-sequenceOffsetTail, &stored))
+	}
+	data, err := record.Encode(data, fields...)
+	if err != nil {
+		return fmt.Errorf("logicx: region %q: %w", s.Name, err)
+	}
+	s.descriptor.Data, s.name = data, s.Name
+	if s.link.event == nil {
+		return nil
+	}
+	if err := s.link.save("region", link.fields()...); err != nil {
+		return err
+	}
+	s.linkDuration, s.position = link.duration, s.Position
+	return nil
 }
 
 // findMarkers decodes global markers and resolves their text, sorted by
