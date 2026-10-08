@@ -1098,3 +1098,54 @@ func TestAutomationPoint_Curves(t *testing.T) {
 		t.Error("Save() accepted an odd curve")
 	}
 }
+
+func TestTrack_RerouteReproducesLogic(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-routing.logicx")
+	logic := parseFixtureProject(t, "mixer-reroute.logicx")
+	toBus3, toStereo := trackNamed(t, &p, "Inst 1"), trackNamed(t, &p, "Inst 2")
+	send := &trackNamed(t, &p, "Inst 4").Sends[0]
+	toBus3.Output, toStereo.Output, send.Bus = 3, 0, 4
+	if err := errors.Join(toBus3.Save(), toStereo.Save(), send.Save()); err != nil {
+		t.Fatal(err)
+	}
+	// Logic also changed two interface bytes on every strip it saved.
+	same := func(ours, theirs []byte) bool {
+		if len(ours) != len(theirs) {
+			return false
+		}
+		for i := range ours {
+			if ours[i] != theirs[i] && i != 80 && i != 81 {
+				return false
+			}
+		}
+		return true
+	}
+	for _, name := range []string{"Inst 1", "Inst 2"} {
+		if ours, theirs := trackNamed(t, &p, name).chunk.Data, trackNamed(t, &logic, name).chunk.Data; !same(ours, theirs) {
+			t.Errorf("%s:\n ours  % x\n Logic % x", name, ours, theirs)
+		}
+	}
+	if ours, theirs := send.chunk.Data, trackNamed(t, &logic, "Inst 4").Sends[0].chunk.Data; !bytes.Equal(ours, theirs) {
+		t.Errorf("send:\n ours  % x\n Logic % x", ours, theirs)
+	}
+	got := reparse(t, &p)
+	if a, b, s := trackNamed(t, &got, "Inst 1").Output, trackNamed(t, &got, "Inst 2").Output, trackNamed(t, &got, "Inst 4").Sends[0].Bus; a != 3 || b != 0 || s != 4 {
+		t.Errorf("routes read back as %d, %d and send bus %d", a, b, s)
+	}
+
+	// Moving an aux to another bus renames its input; Surround is not a route
+	// this package can name.
+	aux := trackNamed(t, &got, "Aux 1")
+	aux.Input = 7
+	if err := aux.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := trackNamed(t, ptr(reparse(t, &got)), "Aux 1").Input; got != 7 {
+		t.Errorf("aux input = %d", got)
+	}
+	surround := trackNamed(t, &got, "Inst 5")
+	surround.Output = -2
+	if surround.Save() == nil {
+		t.Error("Save() routed a strip to Surround")
+	}
+}

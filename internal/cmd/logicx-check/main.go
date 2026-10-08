@@ -278,6 +278,16 @@ var edits = []edit{
 				"curves %d %v, %d %v, %d", bend.Curve, bend.SCurve, flip.Curve, flip.SCurve, straighten.Curve)
 		}, errors.Join(bend.Save(), flip.Save(), straighten.Save())
 	}},
+	{"reroute", "mixer-routing", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		toStereo, toBus := track(p, "Inst 1"), track(p, "Inst 6")
+		send := &track(p, "Inst 5").Sends[1]
+		toStereo.Output, toBus.Output, send.Bus = 0, 4, 3
+		return func(p logicx.ProjectData) error {
+			sends := track(&p, "Inst 5").Sends
+			return expect(track(&p, "Inst 1").Output == 0 && track(&p, "Inst 6").Output == 4 && len(sends) == 2 && sends[1].Bus == 3,
+				"outputs %d and %d, sends %+v", track(&p, "Inst 1").Output, track(&p, "Inst 6").Output, sends)
+		}, errors.Join(toStereo.Save(), toBus.Save(), send.Save())
+	}},
 }
 
 // track returns p's track named name, or an empty one when there is none.

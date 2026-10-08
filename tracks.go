@@ -86,10 +86,10 @@ type Track struct {
 	Solo            bool
 	InputMonitoring bool
 	// Output is where the strip is routed: 0 is Stereo Out, n is Bus n and
-	// -2 is Surround. Save does not write it, since the strip
-	// also refers to its destination's environment object.
+	// -2 is Surround. Save can route a strip between Stereo Out and the buses.
 	Output int16
-	// Input is an aux's input bus, or -1 for none. Save does not write it.
+	// Input is an aux's input bus, or -1 for none. Save can move an aux from
+	// one bus to another.
 	Input int16
 	// Color is the track's color code, which counts through Logic's palette
 	// from its 74th entry; see [Track.PaletteColor]. It is stored in the
@@ -109,10 +109,12 @@ type Track struct {
 	// mixer reports whether the strip is long enough to hold the mixer
 	// settings.
 	mixer bool
-	// name and color are Name and Color as decoded, so that Save writes them
-	// only when they were changed.
-	name  string
-	color uint8
+	// name, color, output and input are as decoded, so that Save writes
+	// them only when they were changed.
+	name          string
+	color         uint8
+	output, input int16
+	routes        *routes
 }
 
 // Mixer settings within a channel strip chunk. The volume is stored twice:
@@ -186,8 +188,7 @@ func (t *Track) SetPaletteColor(row, column int) {
 type Send struct {
 	// Index is the send's slot on the strip, from zero.
 	Index uint8
-	// Bus is the bus it sends to. Save does not write it, since the send
-	// also refers to its destination's environment object.
+	// Bus is the bus it sends to.
 	Bus uint8
 	// Level is the send level on the volume fader's scale; see
 	// [Track.Volume]. Zero is -Inf dB, where Logic starts a new send.
@@ -196,6 +197,8 @@ type Send struct {
 	Pan      int8
 	PreFader bool
 	chunk    *Chunk
+	bus      uint8
+	routes   *routes
 }
 
 // Within a send's chunk. As with the fader, the level is stored twice.
@@ -208,7 +211,9 @@ const (
 	sendLevel   = 24
 	sendPan     = 28 // 64 is center
 	sendMinimum = sendPan + 1
-	chainSend   = 0
+	// sendDestination holds the ID of the bus, after the send's own.
+	sendDestination = 60
+	chainSend       = 0
 )
 
 // fields is the layout of a send; level7, pan and post hold the stored forms
@@ -224,14 +229,15 @@ func (s *Send) fields(level7, pan *uint8, post *bool) []record.Field {
 }
 
 // findSends decodes the sends in chunks by the strip they belong to.
-func findSends(chunks []*Chunk) map[uint16][]Send {
+func findSends(chunks []*Chunk, routes *routes) map[uint16][]Send {
 	sends := make(map[uint16][]Send)
 	for _, chunk := range chunks {
 		if chunk.Type != pluginChunk || !bytes.Equal(chunk.Header[4:8], pluginVariant) ||
 			len(chunk.Data) < sendMinimum || binary.LittleEndian.Uint16(chunk.Data[pluginChainOffset:]) != chainSend {
 			continue
 		}
-		s := Send{Index: chunk.Data[sendIndex], Bus: chunk.Data[sendBus] - 1, chunk: chunk}
+		s := Send{Index: chunk.Data[sendIndex], Bus: chunk.Data[sendBus] - 1, chunk: chunk, routes: routes}
+		s.bus = s.Bus
 		var level7, pan uint8
 		var post bool
 		record.Decode(chunk.Data, s.fields(&level7, &pan, &post)...)
@@ -256,7 +262,20 @@ func (s *Send) Save() error {
 	if err != nil {
 		return fmt.Errorf("logicx: send %d: %w", s.Index, err)
 	}
-	s.chunk.Data = data
+	if s.Bus != s.bus {
+		// The bus's ID follows the send's own; only that one is replaced.
+		if len(data) < sendDestination+routeIDSize {
+			return fmt.Errorf("logicx: send %d has no destination to re-route", s.Index)
+		}
+		end := sendDestination + routeIDSize
+		head, err := s.routes.reroute(data[sendDestination:end], int16(s.bus), int16(s.Bus))
+		if err != nil {
+			return fmt.Errorf("logicx: send %d: %w", s.Index, err)
+		}
+		copy(data[sendDestination:], head)
+		data[sendBus] = s.Bus + 1
+	}
+	s.chunk.Data, s.bus = data, s.Bus
 	return nil
 }
 
@@ -449,6 +468,83 @@ func environmentStrip(data []byte) (uint16, bool) {
 	return strip - 1, strip != 0
 }
 
+// Strips, and sends, name what they route to by ID. A strip in use has an ID
+// of its own; any other has one made from its kind and index. A strip's
+// chunk ends with its own ID, its output's and its input's.
+const routeIDSize = 16
+
+// routes holds the IDs of the strips a route can name, by route: 0 for
+// Stereo Out and n for Bus n.
+type routes struct{ ids map[int16][]byte }
+
+// syntheticRouteID is the ID of a strip not in use.
+func syntheticRouteID(kind byte, index uint16) []byte {
+	id := []byte{0xee, 0, 0, 0, 0, 0, 0x80, 0, 0x80, kind & 0x0f, 0, 0, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint16(id[11:], index)
+	return id
+}
+
+// stereoOutKind is the kind byte of a stereo output strip; Stereo Out is the
+// first.
+const stereoOutKind = 0x4c
+
+// findRoutes reads the IDs of Stereo Out and of the buses. An ID is taken
+// only when it is the one expected of a strip not in use, or another strip
+// names it, so that a strip of some other layout is not misread.
+func findRoutes(chunks []*Chunk) *routes {
+	r := &routes{ids: make(map[int16][]byte)}
+	var strips []*Chunk
+	for _, chunk := range chunks {
+		if isChannelStrip(chunk) && len(chunk.Data) >= channelStripRecord+3*routeIDSize {
+			strips = append(strips, chunk)
+		}
+	}
+	named := func(id []byte, self *Chunk) bool {
+		for _, other := range strips {
+			if other != self && bytes.Contains(other.Data, id) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, chunk := range strips {
+		d := chunk.Data
+		kind, index := d[channelStripKind], binary.LittleEndian.Uint16(d[channelStripKind+2:])
+		id := d[len(d)-3*routeIDSize : len(d)-2*routeIDSize]
+		if !bytes.Equal(id, syntheticRouteID(kind, index)) && (allZero(id) || !named(id, chunk)) {
+			continue
+		}
+		switch {
+		case kind == stereoOutKind && index == 0:
+			r.ids[0] = id
+		case trackKind(d) == TrackKindBus:
+			r.ids[int16(index)+1] = id
+		}
+	}
+	return r
+}
+
+// reroute returns data with the ID of route from replaced by that of route
+// to. It refuses unless both are known and from's ID occurs in data exactly
+// once, so that nothing else is overwritten.
+func (r *routes) reroute(data []byte, from, to int16) ([]byte, error) {
+	old, ok := r.ids[from]
+	if !ok {
+		return nil, fmt.Errorf("route %d is not one this package can change", from)
+	}
+	id, ok := r.ids[to]
+	if !ok {
+		return nil, fmt.Errorf("route %d is not one this package can name", to)
+	}
+	at := bytes.Index(data, old)
+	if at < 0 || bytes.Count(data, old) != 1 {
+		return nil, fmt.Errorf("route %d is not named exactly once", from)
+	}
+	out := bytes.Clone(data)
+	copy(out[at:], id)
+	return out, nil
+}
+
 // stripEnvironment finds the environment object of a channel strip: the
 // strip holds the ID that ends each object, its own first and then those of
 // the objects it routes to.
@@ -585,7 +681,8 @@ func isChannelStrip(chunk *Chunk) bool {
 // relies on.
 func findTracks(chunks []*Chunk) []Track {
 	var tracks []Track
-	sends := findSends(chunks)
+	routes := findRoutes(chunks)
+	sends := findSends(chunks, routes)
 	automation := findAutomation(chunks)
 	var objects []*Chunk
 	byStrip := make(map[uint16][]*Chunk)
@@ -628,6 +725,7 @@ func findTracks(chunks []*Chunk) []Track {
 			track.Pan, track.mixer = int8(pan-64), true
 			track.Output = int16(binary.LittleEndian.Uint16(chunk.Data[channelStripOutput:]))
 			track.Input = int16(binary.LittleEndian.Uint16(chunk.Data[channelStripInput:]))
+			track.output, track.input, track.routes = track.Output, track.Input, routes
 		}
 		track.Sends = sends[track.strip]
 		slices.SortFunc(track.Sends, func(a, b Send) int { return cmp.Compare(a.Index, b.Index) })
@@ -666,8 +764,8 @@ const (
 
 // Save writes t's mixer settings, and its name when it was changed, into the
 // channel strip it was decoded from, and its color into the strip's
-// environment object. Kind, Active, Output and Input are not written, nor
-// are the sends; see [Send.Save]. ProjectData.Tracks is not updated; see
+// environment object, and re-routes it when Output or Input was changed.
+// Kind and Active are not written, nor are the sends; see [Send.Save]. ProjectData.Tracks is not updated; see
 // [ProjectData.Refresh].
 func (t *Track) Save() error {
 	if t.chunk == nil {
@@ -691,6 +789,21 @@ func (t *Track) Save() error {
 	if err != nil {
 		return fmt.Errorf("logicx: track %q: %w", t.Name, err)
 	}
+	for _, route := range []struct {
+		value, decoded int16
+		offset         int
+	}{{t.Output, t.output, channelStripOutput}, {t.Input, t.input, channelStripInput}} {
+		if route.value == route.decoded {
+			continue
+		}
+		if !t.mixer {
+			return fmt.Errorf("logicx: track %q has no route to change", t.Name)
+		}
+		if data, err = t.routes.reroute(data, route.decoded, route.value); err != nil {
+			return fmt.Errorf("logicx: track %q: %w", t.Name, err)
+		}
+		binary.LittleEndian.PutUint16(data[route.offset:], uint16(route.value))
+	}
 	// Older projects hold codes past the palette, so only a changed color
 	// is checked.
 	if t.environment != nil && t.Color != t.color {
@@ -700,6 +813,7 @@ func (t *Track) Save() error {
 		t.environment.Data[environmentColor] = t.Color
 	}
 	t.chunk.Data, t.name, t.color = data, t.Name, t.Color
+	t.output, t.input = t.Output, t.Input
 	return nil
 }
 
