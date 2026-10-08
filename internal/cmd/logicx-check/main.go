@@ -163,6 +163,41 @@ var edits = []edit{
 			return expect(slices.Equal(got, want), "grouping = %v, want %v", got, want)
 		}, m.Save()
 	}},
+	{"note-velocity", "musicxml-roundtrip", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		n := p.Sequences[0].Notes[0]
+		n.Velocity = 37
+		return func(p logicx.ProjectData) error {
+			got := p.Sequences[0].Notes[0]
+			return expect(got.Velocity == 37, "first note velocity %d, want 37", got.Velocity)
+		}, n.Save()
+	}},
+	{"region-move-rename", "musicxml-roundtrip", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		s := p.Sequences[0]
+		count, first := len(s.Notes), s.Notes[0].Position
+		s.Name, s.Position = "Väike Lind", s.Position+3840
+		return func(p logicx.ProjectData) error {
+			got := p.Sequences[0]
+			return expect(got.Name == s.Name && got.Position == s.Position && len(got.Notes) == count && got.Notes[0].Position == first+3840,
+				"region %q at %d with %d notes, first at %d", got.Name, got.Position, len(got.Notes), got.Notes[0].Position)
+		}, s.Save()
+	}},
+	{"region-loop", "musicxml-roundtrip", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		s := p.Sequences[0]
+		count := len(s.Notes)
+		s.Looped, s.Duration = true, 2*s.SourceDuration
+		return func(p logicx.ProjectData) error {
+			got := p.Sequences[0]
+			return expect(got.Looped && got.Duration == s.Duration && len(got.Notes) == 2*count,
+				"region looped %v for %d with %d notes", got.Looped, got.Duration, len(got.Notes))
+		}, s.Save()
+	}},
+	{"marker-rename", "chords", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		m := p.Markers[0]
+		m.Name = "Renamed Marker"
+		return func(p logicx.ProjectData) error {
+			return expect(p.Markers[0].Name == m.Name, "marker %q", p.Markers[0].Name)
+		}, m.Save()
+	}},
 	{"track-plugin-names", "plugins", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t, u := p.Tracks[0], p.AudioUnits[0]
 		t.Name, u.Setting = "Renamed Track", "Renamed Setting"
