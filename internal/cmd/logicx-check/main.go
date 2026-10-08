@@ -251,6 +251,22 @@ var edits = []edit{
 			return nil
 		}, nil
 	}},
+	{"automation-edit", "mixer-automation", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		moved := track(p, "Inst 1").Automation[1]
+		moved.Position, moved.Value = 44160, track(p, "Inst 1").Automation[0].Value/2
+		gone := track(p, "Inst 3").Automation[1]
+		unmute, err := track(p, "Inst 4").Automation[2].Duplicate()
+		if err != nil {
+			return nil, err
+		}
+		unmute.Position, unmute.Value = 53760, 0
+		return func(p logicx.ProjectData) error {
+			volume, pan, mute := track(&p, "Inst 1").Automation, track(&p, "Inst 3").Automation, track(&p, "Inst 4").Automation
+			return expect(len(volume) == 3 && volume[1].Position == moved.Position && volume[1].Value == moved.Value &&
+				len(pan) == 2 && len(mute) == 4 && mute[3].Position == unmute.Position && mute[3].Value == 0,
+				"volume %+v, pan %+v, mute %+v", volume, pan, mute)
+		}, errors.Join(moved.Save(), gone.Delete(), unmute.Save())
+	}},
 }
 
 // track returns p's track named name, or an empty one when there is none.

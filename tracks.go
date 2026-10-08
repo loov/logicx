@@ -97,7 +97,7 @@ type Track struct {
 	Color uint8
 	Sends []Send
 	// Automation is the track's automation points, in time order, as placed
-	// in Logic. It is not written by Save.
+	// in Logic; see [AutomationPoint.Save].
 	Automation []AutomationPoint
 	Instrument *AudioUnit
 	MIDIFX     []AudioUnit
@@ -270,6 +270,62 @@ type AutomationPoint struct {
 	// [Track.Volume]), the pan from 0, fully left, to 127, and the mute as 0
 	// or 1.
 	Value uint32
+	ref   eventRef
+}
+
+// fields is the layout of an automation point; parameter holds the stored
+// form of Parameter.
+func (a *AutomationPoint) fields(parameter *uint8) []record.Field {
+	return []record.Field{
+		record.Equal(0, eventAutomation),
+		record.Uint16LE(2, &a.Fraction),
+		record.Uint32LE(4, &a.Position),
+		record.Uint32LE(8, &a.Value),
+		record.Uint8(12, parameter),
+	}
+}
+
+// Save writes a back into its automation sequence, keeping the sequence in
+// time order. Logic also stores samples of the ramps between points, which
+// it does not need: it draws and saves the automation from the points alone.
+// Save drops the samples of a's parameter rather than leave them stale.
+// Track.Automation is not updated; see [ProjectData.Refresh].
+func (a *AutomationPoint) Save() error {
+	if a.Value > 127<<24 {
+		return fmt.Errorf("logicx: automation value %#x out of range", a.Value)
+	}
+	parameter := uint8(a.Parameter)
+	if err := a.ref.save("automation point", a.fields(&parameter)...); err != nil {
+		return err
+	}
+	a.ref.dropSamples(parameter)
+	return nil
+}
+
+// Delete removes a from its automation sequence, along with the samples of
+// its parameter; see [AutomationPoint.Save].
+func (a *AutomationPoint) Delete() error {
+	if err := a.ref.delete("automation point"); err != nil {
+		return err
+	}
+	a.ref.dropSamples(uint8(a.Parameter))
+	return nil
+}
+
+// Duplicate inserts a copy of a right after it and returns the copy, which
+// is saved to place it; see [AutomationPoint.Save].
+func (a *AutomationPoint) Duplicate() (AutomationPoint, error) {
+	ref, err := a.ref.duplicate("automation point")
+	copied := *a
+	copied.ref = ref
+	return copied, err
+}
+
+// dropSamples removes the ramp samples of parameter from the sequence.
+func (r eventRef) dropSamples(parameter uint8) {
+	r.chunk.Events = slices.DeleteFunc(r.chunk.Events, func(e *Event) bool {
+		return e.Data[0] == eventAutomation && len(e.Data) >= atomSize && e.Data[12] == parameter && e.Data[15]&automationSample != 0
+	})
 }
 
 // AutomationParameter is what an automation point controls, numbered like
@@ -319,6 +375,7 @@ func findAutomation(chunks []*Chunk) map[uint32][]AutomationPoint {
 			points[track] = append(points[track], AutomationPoint{
 				Position: binary.LittleEndian.Uint32(d[4:]), Fraction: binary.LittleEndian.Uint16(d[2:]),
 				Parameter: AutomationParameter(d[12]), Value: binary.LittleEndian.Uint32(d[8:]),
+				ref: eventRef{chunk, event},
 			})
 		}
 	}

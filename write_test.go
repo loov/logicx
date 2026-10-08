@@ -1006,3 +1006,55 @@ func TestTrack_DecodesAutomation(t *testing.T) {
 		}
 	}
 }
+
+func TestAutomationPoint_SaveDeleteDuplicate(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-automation.logicx")
+	volume, pan, mute := trackNamed(t, &p, "Inst 1"), trackNamed(t, &p, "Inst 3"), trackNamed(t, &p, "Inst 4")
+
+	moved := volume.Automation[1]
+	moved.Position, moved.Value = 44000, volumeFromDB(-6)
+	if err := moved.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pan.Automation[1].Delete(); err != nil {
+		t.Fatal(err)
+	}
+	unmute, err := mute.Automation[2].Duplicate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unmute.Position, unmute.Value = 53760, 0
+	if err := unmute.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := reparse(t, &p)
+	positions := func(name string) (out [][2]uint32) {
+		for _, a := range trackNamed(t, &got, name).Automation {
+			out = append(out, [2]uint32{a.Position, a.Value})
+		}
+		return out
+	}
+	want := map[string][][2]uint32{
+		"Inst 1": {{38400, unityVolume}, {44000, volumeFromDB(-6)}, {46400, volume.Automation[2].Value}},
+		"Inst 3": {{38400, 0}, {46160, 127 << 24}},
+		"Inst 4": {{38400, 0}, {42240, 0}, {46000, 1 << 24}, {53760, 0}},
+	}
+	for name, w := range want {
+		if g := positions(name); !slices.Equal(g, w) {
+			t.Errorf("%s automation = %v, want %v", name, g, w)
+		}
+	}
+	// The edited lanes lost their stale samples; the curve on Inst 2 kept its.
+	samples := map[uint32]int{}
+	for _, chunk := range got.Chunks {
+		for _, e := range chunk.Events {
+			if e.Data[0] == eventAutomation && e.Data[15]&automationSample != 0 {
+				samples[chunkSequenceID(chunk).sequence]++
+			}
+		}
+	}
+	if len(samples) != 1 || samples[28] == 0 {
+		t.Errorf("samples by sequence = %v, want only Inst 2's", samples)
+	}
+}
