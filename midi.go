@@ -56,9 +56,10 @@ type MIDISequence struct {
 // sequence, and are what Save writes. Every repeat of a looped note shares one
 // record, so saving any of them changes them all.
 //
-// Velocity is the note-on velocity, 1 to 127. It is identified by its values
-// across 16,278 notes in 46 projects: always within that range, spread as
-// played velocities are, and peaking at Logic's default of 80.
+// Velocity is the note-on velocity, 1 to 127. It was found from its values
+// across 16,278 notes in 46 projects — always within that range, spread as
+// played velocities are, peaking at Logic's default of 80 — and confirmed by
+// Logic showing a saved velocity in its inspector.
 type MIDINote struct {
 	Position           uint32
 	SourcePosition     uint32
