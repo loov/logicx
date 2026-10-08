@@ -85,8 +85,8 @@ type Track struct {
 	Mute            bool
 	Solo            bool
 	InputMonitoring bool
-	// Output is where the strip is routed: 0 is Stereo Out and n is Bus n;
-	// Output 3-4 was seen as -2. Save does not write it, since the strip
+	// Output is where the strip is routed: 0 is Stereo Out, n is Bus n and
+	// -2 is Surround. Save does not write it, since the strip
 	// also refers to its destination's environment object.
 	Output int16
 	// Input is an aux's input bus, or -1 for none. Save does not write it.
@@ -186,7 +186,7 @@ type Send struct {
 	// also refers to its destination's environment object.
 	Bus uint8
 	// Level is the send level on the volume fader's scale; see
-	// [Track.Volume]. Sends left at 0 dB were seen saved as zero.
+	// [Track.Volume]. Zero is -Inf dB, where Logic starts a new send.
 	Level uint32
 	// Pan runs from -64, fully left, to 63, fully right.
 	Pan      int8

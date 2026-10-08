@@ -912,7 +912,8 @@ func TestSend_DecodesWhatLogicSet(t *testing.T) {
 		PreFader   bool
 	}
 	want := map[string][]send{
-		// Sends left at 0 dB were saved with a level of zero.
+		// Sends whose level was left alone stay at -Inf, where Logic starts
+		// them.
 		"Inst 4": {{0, 1, math.Inf(-1), false}},
 		"Inst 5": {{0, 4, -10, false}, {1, 5, -20, false}},
 		"Inst 6": {{0, 1, math.Inf(-1), true}},
