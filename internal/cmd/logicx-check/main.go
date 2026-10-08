@@ -24,6 +24,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -206,6 +207,39 @@ var edits = []edit{
 				"track %q, setting %q", p.Tracks[0].Name, p.AudioUnits[0].Setting)
 		}, errors.Join(t.Save(), u.Save())
 	}},
+	{"mixer", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		volume, pan, mute, monitor, color := track(p, "Inst 1"), track(p, "Inst 2"), track(p, "Inst 3"), track(p, "Inst 4"), track(p, "Inst 5")
+		volume.SetVolumeDB(-12)
+		pan.Pan, mute.Mute, monitor.InputMonitoring = -30, true, true
+		color.SetPaletteColor(1, 3)
+		return func(p logicx.ProjectData) error {
+			volume, pan, mute, monitor, color := track(&p, "Inst 1"), track(&p, "Inst 2"), track(&p, "Inst 3"), track(&p, "Inst 4"), track(&p, "Inst 5")
+			row, column := color.PaletteColor()
+			return expect(math.Abs(volume.VolumeDB()+12) < 0.01 && pan.Pan == -30 && mute.Mute && monitor.InputMonitoring && row == 1 && column == 3,
+				"volume %.2f dB, pan %d, mute %v, monitoring %v, color at %d,%d",
+				volume.VolumeDB(), pan.Pan, mute.Mute, monitor.InputMonitoring, row, column)
+		}, errors.Join(volume.Save(), pan.Save(), mute.Save(), monitor.Save(), color.Save())
+	}},
+	{"send", "mixer-routing", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		s := &track(p, "Inst 5").Sends[0]
+		s.Level, s.Pan, s.PreFader = track(p, "Inst 1").Volume/2, -10, true
+		want := *s
+		return func(p logicx.ProjectData) error {
+			sends := track(&p, "Inst 5").Sends
+			return expect(len(sends) == 2 && sends[0].Level == want.Level && sends[0].Pan == -10 && sends[0].PreFader && sends[0].Bus == 4,
+				"sends %+v", sends)
+		}, s.Save()
+	}},
+}
+
+// track returns p's track named name, or an empty one when there is none.
+func track(p *logicx.ProjectData, name string) *logicx.Track {
+	for i := range p.Tracks {
+		if p.Tracks[i].Name == name {
+			return &p.Tracks[i]
+		}
+	}
+	return &logicx.Track{}
 }
 
 // noteCheck checks that a note with n's pitch sits at n's position.
