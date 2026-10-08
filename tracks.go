@@ -508,7 +508,7 @@ func findTracks(chunks []*Chunk) []Track {
 		}
 		descriptor := strip[16:24]
 		track := Track{
-			Name: name, Kind: trackKind(descriptor),
+			Name: name, Kind: trackKind(chunk.Data),
 			Offset: chunk.Offset + chunkHeaderSize + channelStripRecord,
 			Active: descriptor[2]&0x04 != 0 || descriptor[4] != 0,
 			strip:  binary.LittleEndian.Uint16(chunk.Header[14:]),
@@ -651,27 +651,20 @@ func assignAudioUnits(tracks []Track, units []AudioUnit) {
 	}
 }
 
-// trackKind classifies a channel strip from its 8-byte descriptor.
-func trackKind(d []byte) TrackKind {
-	// A few audio and instrument strips also carry 0x10, meaning unknown.
-	switch d[0] &^ 0x10 {
-	case 0x89:
-		return TrackKindMaster
-	case 0x49:
-		return TrackKindOutput
-	case 0xe9:
-		return TrackKindBus
-	case 0xab:
-		if d[1] == 0xf5 {
-			return TrackKindAux
-		}
-		return TrackKindAudio
-	case 0x29:
-		if d[2] == 0xf3 || d[2] == 0xf7 {
-			return TrackKindInstrument
-		}
-		return TrackKindInput
-	default:
-		return TrackKindUnknown
+// channelStripKind is the byte of a channel strip chunk whose low three bits
+// say what kind of strip it is.
+const channelStripKind = 4
+
+// trackKinds are the kinds of channel strip, by their code.
+var trackKinds = []TrackKind{
+	TrackKindAudio, TrackKindInput, TrackKindAux, TrackKindInstrument,
+	TrackKindOutput, TrackKindBus, TrackKindMaster,
+}
+
+// trackKind classifies a channel strip chunk's payload.
+func trackKind(data []byte) TrackKind {
+	if code := int(data[channelStripKind] & 0x07); code < len(trackKinds) {
+		return trackKinds[code]
 	}
+	return TrackKindUnknown
 }

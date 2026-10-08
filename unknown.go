@@ -186,8 +186,9 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 			descriptor := channelStripRecord + 16
 			return "channel strip", []record.Field{
 				record.CString(channelStripName, channelStripNameSize, new(string)),
-				// The kind and activity are read from these descriptor bytes.
-				record.Copy(descriptor, make([]byte, 3)),
+				record.Uint8(channelStripKind, new(uint8)),
+				// Whether the strip is active is read from these descriptor bytes.
+				record.Uint8(descriptor+2, new(uint8)),
 				record.Uint8(descriptor+4, new(uint8)),
 			}
 		}

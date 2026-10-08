@@ -25,6 +25,7 @@ func TestOpenBundle_ParsesBinaryMetadataAndInstrument(t *testing.T) {
 	// each of its plug-ins is an AuCU chunk naming the same strip.
 	const strip = 7
 	stripPayload := make([]byte, channelStripRecord)
+	stripPayload[channelStripKind] = 0x43
 	track := append([]byte{0x20}, []byte("Inst 1")...)
 	track = append(track, make([]byte, 16-len(track))...)
 	track = append(track, []byte{0x29, 0, 0xf7, 0xc5, 1, 0, 0, 0}...)
@@ -843,6 +844,7 @@ func TestParseProjectData_ChannelStripVersions(t *testing.T) {
 	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})
 	for _, version := range []byte{5, 6, 7, 8} {
 		payload := make([]byte, channelStripRecord)
+		payload[channelStripKind] = 0x40
 		record := append([]byte{0x20}, fmt.Sprintf("Audio %d", version)...)
 		record = append(record, make([]byte, 16-len(record))...)
 		record = append(record, 0xab, 0, 0, 0, 1, 0, 0, 0)
@@ -859,5 +861,22 @@ func TestParseProjectData_ChannelStripVersions(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"Audio 5", "Audio 6", "Audio 7"}) {
 		t.Fatalf("tracks = %v", names)
+	}
+}
+
+func TestParseProjectData_ClassifiesEveryStrip(t *testing.T) {
+	p := parseFixtureProject(t, "mixer.logicx")
+	for name, want := range map[string]TrackKind{
+		"Audio 1": TrackKindAudio, "Input 1": TrackKindInput, "Aux 1": TrackKindAux, "Inst 1": TrackKindInstrument,
+		"Output 1": TrackKindOutput, "Bus 1": TrackKindBus, "Master": TrackKindMaster,
+	} {
+		if got := trackNamed(t, &p, name).Kind; got != want {
+			t.Errorf("%s is %s, want %s", name, got, want)
+		}
+	}
+	for _, track := range p.Tracks {
+		if track.Kind == TrackKindUnknown {
+			t.Errorf("%s is unclassified", track.Name)
+		}
 	}
 }
