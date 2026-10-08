@@ -25,6 +25,8 @@ type ProjectData struct {
 	AudioFiles     []AudioFile
 	AudioRegions   []AudioRegion
 	Environment    []EnvironmentObject
+	// Transport is nil when the project has no song chunk this package reads.
+	Transport *Transport
 }
 
 // chunkHeaderSize is the size of the header preceding every chunk's payload.
@@ -82,7 +84,7 @@ func (p *ProjectData) Refresh() {
 		TimeSignatures: findTimeSignatureChanges(chunks), KeySignatures: findKeySignatureChanges(chunks),
 		ProjectChords: findProjectChords(chunks),
 		AudioFiles:    findAudioFiles(chunks), AudioRegions: findAudioRegions(chunks),
-		Environment: findEnvironment(chunks),
+		Environment: findEnvironment(chunks), Transport: findTransport(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
 }

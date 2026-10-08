@@ -212,6 +212,11 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 		}
 		fields = append(fields, record.String16(sequenceNameLength, new(string)))
 		return "sequence", fields
+	case songChunk:
+		if len(d) >= songMinimum {
+			var t Transport
+			return "song", t.fields()
+		}
 	case "TxSq":
 		if start := bytes.Index(d, []byte(`{\rtf`)); start >= 0 {
 			var size, at, repeated uint32

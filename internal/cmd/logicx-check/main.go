@@ -288,6 +288,19 @@ var edits = []edit{
 				"outputs %d and %d, sends %+v", track(&p, "Inst 1").Output, track(&p, "Inst 6").Output, sends)
 		}, errors.Join(toStereo.Save(), toBus.Save(), send.Save())
 	}},
+	{"transport", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		t := p.Transport
+		if t == nil {
+			return nil, errors.New("no transport")
+		}
+		t.Cycle, t.CycleStart, t.CycleEnd, t.End, t.SMPTEOffset = true, 46080, 61440, 226560, 441000
+		want := *t
+		return func(p logicx.ProjectData) error {
+			got := p.Transport
+			return expect(got != nil && got.Cycle && got.CycleStart == want.CycleStart && got.CycleEnd == want.CycleEnd &&
+				got.End == want.End && got.SMPTEOffset == want.SMPTEOffset, "transport %+v", got)
+		}, t.Save()
+	}},
 }
 
 // track returns p's track named name, or an empty one when there is none.

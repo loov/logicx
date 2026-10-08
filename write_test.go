@@ -92,6 +92,9 @@ func saveAll(t *testing.T, p *ProjectData) {
 	for i := range p.Environment {
 		add(p.Environment[i].Save)
 	}
+	if p.Transport != nil {
+		add(p.Transport.Save)
+	}
 	for i := range p.Tracks {
 		p.Tracks[i].name = ""
 		add(p.Tracks[i].Save)
@@ -161,6 +164,9 @@ func everySave(p *ProjectData) []func() error {
 	}
 	for i := range p.Environment {
 		saves = append(saves, p.Environment[i].Save)
+	}
+	if p.Transport != nil {
+		saves = append(saves, p.Transport.Save)
 	}
 	for i := range p.Tracks {
 		saves = append(saves, p.Tracks[i].Save)
@@ -1147,5 +1153,49 @@ func TestTrack_RerouteReproducesLogic(t *testing.T) {
 	surround.Output = -2
 	if surround.Save() == nil {
 		t.Error("Save() routed a strip to Surround")
+	}
+}
+
+func TestTransport_DecodesWhatLogicSet(t *testing.T) {
+	bar := func(n uint32) uint32 { return 38400 + (n-1)*3840 }
+	for fixture, want := range map[string]Transport{
+		// Logic starts with a cycle over bars 1 to 5, the end at bar 129 and
+		// bar 1 at one hour.
+		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), 3600 * 44100, nil},
+		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), 3600 * 44100, nil},
+		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), 3600 * 44100, nil},
+		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), 10 * 44100, nil},
+	} {
+		got := *parseFixtureProject(t, fixture).Transport
+		got.chunk = nil
+		if got != want {
+			t.Errorf("%s transport = %+v, want %+v", fixture, got, want)
+		}
+	}
+}
+
+func TestTransport_Save(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-base.logicx")
+	tr := p.Transport
+	tr.Cycle, tr.CycleStart, tr.CycleEnd, tr.End, tr.SMPTEOffset = true, 46080, 61440, 226560, 441000
+	if err := tr.Save(); err != nil {
+		t.Fatal(err)
+	}
+	// Logic keeps both copies equal.
+	d := tr.chunk.Data
+	for _, at := range []int{songCycle, songEnd, songCycleStart, songCycleEnd} {
+		if d[at] != d[songCopy+at] || binary.LittleEndian.Uint32(d[at:]) != binary.LittleEndian.Uint32(d[songCopy+at:]) && at != songCycle {
+			t.Errorf("the copies differ at %d", at)
+		}
+	}
+	got, want := *reparse(t, &p).Transport, *tr
+	got.chunk, want.chunk = nil, nil
+	if got != want {
+		t.Fatalf("transport = %+v, want %+v", got, want)
+	}
+	backwards := parseFixtureProject(t, "mixer-base.logicx").Transport
+	backwards.CycleStart, backwards.CycleEnd = 61440, 46080
+	if backwards.Save() == nil {
+		t.Error("Save() accepted a cycle that ends before it starts")
 	}
 }
