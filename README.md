@@ -90,6 +90,18 @@ placement, right-edge cropping and loops are reconstructed, with looped notes,
 region chords, tempo curves, lyrics and score articulations expanded.
 Performance articulation-ID assignments stay in the raw chunks, undecoded.
 
+## Tempo map as MIDI
+
+```sh
+go install github.com/loov/logicx/cmd/logicx-to-tempomap@latest
+logicx-to-tempomap song.logicx
+```
+
+writes `song.mid` beside the project: one track holding the tempo map, with
+ramps as the tempo steps Logic samples them into, plus time and key signatures
+and markers. Bar 1 is tick zero. `-o` names the file instead; `-alternative`
+picks a project alternative.
+
 ## New project from an audio file
 
 ```sh

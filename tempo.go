@@ -17,8 +17,9 @@ type TempoChange struct {
 	Position         uint32
 	PositionFraction uint16
 	BPM              float64
-	// TODO(logicx): What do flags 0x40/0x80 and the records between curve
-	// control points encode?
+	// TODO(logicx): What do flags 0x01/0x40/0x80 and the records between curve
+	// control points encode? 0x01 is set on every record of a map that may
+	// have come from applying a region's tempo to the project; unconfirmed.
 	Flags uint8
 	Raw   [32]byte
 	ref   eventRef
@@ -67,7 +68,7 @@ func decodeTempoChange(data []byte) (TempoChange, bool) {
 	var change TempoChange
 	var value uint32
 	if !record.Decode(data, append(change.fields(&value), record.Copy(0, change.Raw[:]))...) ||
-		value == 0 || value > maxTempoValue || change.Flags&^byte(0xc0) != 0 {
+		value == 0 || value > maxTempoValue || change.Flags&^byte(0xc1) != 0 {
 		return TempoChange{}, false
 	}
 	change.BPM = float64(value) / 10_000

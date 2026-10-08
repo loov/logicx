@@ -880,3 +880,15 @@ func TestParseProjectData_ClassifiesEveryStrip(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeTempoChange_AcceptsFlag01(t *testing.T) {
+	// A tempo record from a project whose whole tempo map carries flag 0x01.
+	data := []byte{
+		0x60, 0, 0, 0, 0x00, 0x96, 0, 0, 0, 0, 0, 0, 0x7f, 0, 0, 0x01,
+		0x34, 0x02, 0x17, 0, 0, 0, 0, 0x88, 0x00, 0xdd, 0x6d, 0, 0, 0, 0, 0,
+	}
+	change, ok := decodeTempoChange(data)
+	if !ok || change.Position != 38_400 || change.BPM != 150.7892 || change.Flags != 0x01 {
+		t.Fatalf("decoded %+v, %v", change, ok)
+	}
+}
