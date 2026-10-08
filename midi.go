@@ -612,27 +612,16 @@ func (n *MIDINote) fields(status, release *uint8) []record.Field {
 // Each was found by setting it on a note in Logic and comparing the saves, or
 // by writing it and reading it back in Logic's Note Attributes dialog.
 type NoteAttributes struct {
-	// EnharmonicShift respells the note: -2 is bb, -1 b, 1 # and 2 ##.
-	EnharmonicShift int8
-	// AccidentalType forces, hides or guides the accidental.
-	AccidentalType AccidentalType
+	EnharmonicShift EnharmonicShift
+	AccidentalType  AccidentalType
 	// AccidentalPosition moves the accidental horizontally.
 	AccidentalPosition int8
-	// NoteHead is the shape of the note head: 1 an open slanted oval, 3
-	// hidden, 4 ×, 5 ⊗, 6 ◇, 7 ◆, 8 △, 9 ▲, 10 a slash, 11 a bold ×, 12 a
-	// filled parallelogram, 13 a circle with a bold ×, 14 ▽ and 15 ▼. Logic
-	// shows 2 as Default.
-	NoteHead uint8
-	// Tie is 1 up, 2 down and 3 hidden.
-	Tie uint8
-	// StemDirection is 1 up, 2 down and 3 hidden.
-	StemDirection uint8
-	// StemPosition is 1 center, 2 automatic and 3 at the side.
-	StemPosition uint8
-	// Syncopation is 1 to force it and 2 to defeat it.
-	Syncopation uint8
-	// Interpretation is 1 to force it and 2 to defeat it.
-	Interpretation uint8
+	NoteHead           NoteHead
+	Tie                Tie
+	StemDirection      StemDirection
+	StemPosition       StemPosition
+	Syncopation        Syncopation
+	Interpretation     Interpretation
 	// HorizontalPosition moves the note horizontally. Logic shows it
 	// unsigned, 0 to 255, unlike the signed accidental position and size.
 	HorizontalPosition uint8
@@ -640,7 +629,18 @@ type NoteAttributes struct {
 	Size int8
 }
 
-// AccidentalType is the Accidental Type of a note's attributes.
+// EnharmonicShift respells a note by the given number of semitones.
+type EnharmonicShift int8
+
+const (
+	EnharmonicDoubleFlat  EnharmonicShift = -2
+	EnharmonicFlat        EnharmonicShift = -1
+	EnharmonicNone        EnharmonicShift = 0
+	EnharmonicSharp       EnharmonicShift = 1
+	EnharmonicDoubleSharp EnharmonicShift = 2
+)
+
+// AccidentalType forces, hides or guides a note's accidental.
 type AccidentalType uint8
 
 const (
@@ -648,6 +648,76 @@ const (
 	AccidentalGuide AccidentalType = 0x08
 	AccidentalForce AccidentalType = 0x10
 	AccidentalHide  AccidentalType = 0x20
+)
+
+// NoteHead is the shape of a note's head. Logic shows 2 as Default too.
+type NoteHead uint8
+
+const (
+	NoteHeadDefault            NoteHead = 0
+	NoteHeadSlantedOval        NoteHead = 1
+	NoteHeadHidden             NoteHead = 3
+	NoteHeadCross              NoteHead = 4 // ×
+	NoteHeadCircledCross       NoteHead = 5 // ⊗
+	NoteHeadDiamond            NoteHead = 6 // ◇
+	NoteHeadFilledDiamond      NoteHead = 7 // ◆
+	NoteHeadTriangle           NoteHead = 8 // △
+	NoteHeadFilledTriangle     NoteHead = 9 // ▲
+	NoteHeadSlash              NoteHead = 10
+	NoteHeadBoldCross          NoteHead = 11
+	NoteHeadParallelogram      NoteHead = 12 // filled
+	NoteHeadCircledBoldCross   NoteHead = 13
+	NoteHeadDownTriangle       NoteHead = 14 // ▽
+	NoteHeadFilledDownTriangle NoteHead = 15 // ▼
+)
+
+// Tie is the direction of a note's tie.
+type Tie uint8
+
+const (
+	TieDefault Tie = 0
+	TieUp      Tie = 1
+	TieDown    Tie = 2
+	TieHide    Tie = 3
+)
+
+// StemDirection is the direction of a note's stem.
+type StemDirection uint8
+
+const (
+	StemDefault StemDirection = 0
+	StemUp      StemDirection = 1
+	StemDown    StemDirection = 2
+	StemHide    StemDirection = 3
+)
+
+// StemPosition is where a note's stem attaches; the codes do not follow the
+// menu's order.
+type StemPosition uint8
+
+const (
+	StemPositionDefault   StemPosition = 0
+	StemPositionCenter    StemPosition = 1
+	StemPositionAutomatic StemPosition = 2
+	StemPositionSide      StemPosition = 3
+)
+
+// Syncopation forces or defeats a note's syncopated display.
+type Syncopation uint8
+
+const (
+	SyncopationDefault Syncopation = 0
+	SyncopationForce   Syncopation = 1
+	SyncopationDefeat  Syncopation = 2
+)
+
+// Interpretation forces or defeats a note's display interpretation.
+type Interpretation uint8
+
+const (
+	InterpretationDefault Interpretation = 0
+	InterpretationForce   Interpretation = 1
+	InterpretationDefeat  Interpretation = 2
 )
 
 // Tags of the note attribute atoms, in the order Logic stores them, ahead of
@@ -663,16 +733,16 @@ const (
 func (a *NoteAttributes) decodeAtom(atom []byte) bool {
 	switch atom[7] {
 	case atomStem:
-		a.Syncopation, a.Interpretation = atom[2]&0x03, atom[2]>>4&0x03
-		a.StemDirection, a.StemPosition = atom[6]&0x03, atom[6]>>2&0x03
+		a.Syncopation, a.Interpretation = Syncopation(atom[2]&0x03), Interpretation(atom[2]>>4&0x03)
+		a.StemDirection, a.StemPosition = StemDirection(atom[6]&0x03), StemPosition(atom[6]>>2&0x03)
 	case atomAccidental:
 		if atom[4]&0x07 > 4 {
 			return false
 		}
-		a.EnharmonicShift = int8(atom[4]&0x07) - 2
+		a.EnharmonicShift = EnharmonicShift(atom[4]&0x07) - 2
 		a.AccidentalType = AccidentalType(atom[4] & 0x38)
 		a.AccidentalPosition = int8(atom[5])
-		a.NoteHead, a.Tie = atom[6]&0x1f, atom[6]>>5&0x03
+		a.NoteHead, a.Tie = NoteHead(atom[6]&0x1f), Tie(atom[6]>>5&0x03)
 	case atomPlacement:
 		a.HorizontalPosition, a.Size = atom[4], int8(atom[6])
 	default:
@@ -689,12 +759,12 @@ func (a NoteAttributes) encodeAtom(tag byte, atom []byte) []byte {
 	out[7] = tag
 	switch tag {
 	case atomStem:
-		out[2] = out[2]&^0x33 | a.Syncopation | a.Interpretation<<4
-		out[6] = out[6]&^0x0f | a.StemDirection | a.StemPosition<<2
+		out[2] = out[2]&^0x33 | uint8(a.Syncopation) | uint8(a.Interpretation)<<4
+		out[6] = out[6]&^0x0f | uint8(a.StemDirection) | uint8(a.StemPosition)<<2
 	case atomAccidental:
 		out[4] = out[4]&^0x3f | uint8(a.EnharmonicShift+2) | uint8(a.AccidentalType)
 		out[5] = uint8(a.AccidentalPosition)
-		out[6] = out[6]&^0x7f | a.NoteHead | a.Tie<<5
+		out[6] = out[6]&^0x7f | uint8(a.NoteHead) | uint8(a.Tie)<<5
 	case atomPlacement:
 		out[4], out[6] = a.HorizontalPosition, uint8(a.Size)
 	}
@@ -704,7 +774,7 @@ func (a NoteAttributes) encodeAtom(tag byte, atom []byte) []byte {
 // validate reports attributes that do not fit their stored fields.
 func (a NoteAttributes) validate() error {
 	switch {
-	case a.EnharmonicShift < -2 || a.EnharmonicShift > 2:
+	case a.EnharmonicShift < EnharmonicDoubleFlat || a.EnharmonicShift > EnharmonicDoubleSharp:
 		return fmt.Errorf("logicx: enharmonic shift %d out of range", a.EnharmonicShift)
 	case a.AccidentalType != AccidentalAuto && a.AccidentalType != AccidentalGuide &&
 		a.AccidentalType != AccidentalForce && a.AccidentalType != AccidentalHide:

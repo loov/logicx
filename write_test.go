@@ -697,31 +697,31 @@ var noteAttributeEdits = map[string][]NoteAttributes{
 		{AccidentalType: AccidentalHide},
 		{AccidentalType: AccidentalGuide},
 		{AccidentalPosition: 3},
-		{NoteHead: 4},
-		{Tie: 2},
-		{StemDirection: 2},
-		{StemPosition: 3},
-		{Syncopation: 2},
-		{Interpretation: 1},
+		{NoteHead: NoteHeadCross},
+		{Tie: TieDown},
+		{StemDirection: StemDown},
+		{StemPosition: StemPositionSide},
+		{Syncopation: SyncopationDefeat},
+		{Interpretation: InterpretationForce},
 		{HorizontalPosition: 5},
 		{Size: 2},
-		{NoteHead: 3},
+		{NoteHead: NoteHeadHidden},
 	},
 	"note-spelling.logicx": {
 		{},
-		{EnharmonicShift: 2},
-		{EnharmonicShift: 1},
-		{EnharmonicShift: -1},
+		{EnharmonicShift: EnharmonicDoubleSharp},
+		{EnharmonicShift: EnharmonicSharp},
+		{EnharmonicShift: EnharmonicFlat},
 		{AccidentalType: AccidentalForce},
-		{EnharmonicShift: -2, AccidentalType: AccidentalForce},
+		{EnharmonicShift: EnharmonicDoubleFlat, AccidentalType: AccidentalForce},
 	},
 }
 
 func TestNoteAttributes_DecodeWhatLogicSet(t *testing.T) {
 	// The original fixture, imported from MusicXML, already carries note heads
-	// on two notes: a cross (4) and, by the menu's order, a filled diamond (7).
+	// on two notes: a filled diamond and a cross.
 	original := parseFixtureProject(t, "musicxml-roundtrip.logicx").Sequences[0].Notes
-	if original[37].Attributes.NoteHead != 7 || original[38].Attributes.NoteHead != 4 {
+	if original[37].Attributes.NoteHead != NoteHeadFilledDiamond || original[38].Attributes.NoteHead != NoteHeadCross {
 		t.Errorf("imported note heads = %d, %d", original[37].Attributes.NoteHead, original[38].Attributes.NoteHead)
 	}
 	for fixture, want := range noteAttributeEdits {
