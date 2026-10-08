@@ -931,6 +931,17 @@ func TestSend_DecodesWhatLogicSet(t *testing.T) {
 	}
 }
 
+func TestSend_LevelUsesTheFaderScale(t *testing.T) {
+	// The same sends, raised in Logic to 0 dB and to the top of the knob.
+	p := parseFixtureProject(t, "mixer-routing-alt.logicx")
+	if got := trackNamed(t, &p, "Inst 4").Sends[0].Level; got != unityVolume {
+		t.Errorf("0 dB send level = %#x, want %#x", got, unityVolume)
+	}
+	if got := trackNamed(t, &p, "Inst 6").Sends[0].Level; got != 127<<24 {
+		t.Errorf("+6 dB send level = %#x, want %#x", got, 127<<24)
+	}
+}
+
 func TestSend_Save(t *testing.T) {
 	p := parseFixtureProject(t, "mixer-routing.logicx")
 	send := &trackNamed(t, &p, "Inst 5").Sends[0]
