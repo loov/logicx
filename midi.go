@@ -609,9 +609,8 @@ func (n *MIDINote) fields(status, release *uint8) []record.Field {
 // value leaves every one at its default. Logic stores them in trailing atoms
 // of the note record, each atom only while one of its attributes is set.
 //
-// Each was found by setting it on a note in Logic and comparing the saves. A
-// menu attribute holds the menu item's code: the codes seen are listed, and
-// the rest are expected to follow the menu's order.
+// Each was found by setting it on a note in Logic and comparing the saves, or
+// by writing it and reading it back in Logic's Note Attributes dialog.
 type NoteAttributes struct {
 	// EnharmonicShift respells the note: -2 is bb, -1 b, 1 # and 2 ##.
 	EnharmonicShift int8
@@ -619,21 +618,24 @@ type NoteAttributes struct {
 	AccidentalType AccidentalType
 	// AccidentalPosition moves the accidental horizontally.
 	AccidentalPosition int8
-	// NoteHead is 3 for a hidden head and 4 for a cross; later shapes follow
-	// in the menu's order.
+	// NoteHead is the shape of the note head: 1 an open slanted oval, 3
+	// hidden, 4 ×, 5 ⊗, 6 ◇, 7 ◆, 8 △, 9 ▲, 10 a slash, 11 a bold ×, 12 a
+	// filled parallelogram, 13 a circle with a bold ×, 14 ▽ and 15 ▼. Logic
+	// shows 2 as Default.
 	NoteHead uint8
-	// Tie is 2 for a downward tie; 1 is expected to be up and 3 hidden.
+	// Tie is 1 up, 2 down and 3 hidden.
 	Tie uint8
-	// StemDirection is 2 for down; 1 is expected to be up and 3 hidden.
+	// StemDirection is 1 up, 2 down and 3 hidden.
 	StemDirection uint8
-	// StemPosition is 3 for a stem at the side.
+	// StemPosition is 1 center, 2 automatic and 3 at the side.
 	StemPosition uint8
-	// Syncopation is 2 to defeat it; 1 is expected to force it.
+	// Syncopation is 1 to force it and 2 to defeat it.
 	Syncopation uint8
-	// Interpretation is 1 to force it; 2 is expected to defeat it.
+	// Interpretation is 1 to force it and 2 to defeat it.
 	Interpretation uint8
-	// HorizontalPosition moves the note horizontally.
-	HorizontalPosition int8
+	// HorizontalPosition moves the note horizontally. Logic shows it
+	// unsigned, 0 to 255, unlike the signed accidental position and size.
+	HorizontalPosition uint8
 	// Size changes the note's size.
 	Size int8
 }
@@ -672,7 +674,7 @@ func (a *NoteAttributes) decodeAtom(atom []byte) bool {
 		a.AccidentalPosition = int8(atom[5])
 		a.NoteHead, a.Tie = atom[6]&0x1f, atom[6]>>5&0x03
 	case atomPlacement:
-		a.HorizontalPosition, a.Size = int8(atom[4]), int8(atom[6])
+		a.HorizontalPosition, a.Size = atom[4], int8(atom[6])
 	default:
 		return false
 	}
@@ -694,7 +696,7 @@ func (a NoteAttributes) encodeAtom(tag byte, atom []byte) []byte {
 		out[5] = uint8(a.AccidentalPosition)
 		out[6] = out[6]&^0x7f | a.NoteHead | a.Tie<<5
 	case atomPlacement:
-		out[4], out[6] = uint8(a.HorizontalPosition), uint8(a.Size)
+		out[4], out[6] = a.HorizontalPosition, uint8(a.Size)
 	}
 	return out
 }
