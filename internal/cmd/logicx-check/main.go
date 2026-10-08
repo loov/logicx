@@ -301,6 +301,16 @@ var edits = []edit{
 				got.End == want.End && got.SMPTEStart == want.SMPTEStart, "transport %+v", got)
 		}, t.Save()
 	}},
+	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		t := p.Transport
+		if t == nil {
+			return nil, errors.New("no transport")
+		}
+		t.SampleRate = 96000
+		return func(p logicx.ProjectData) error {
+			return expect(p.Transport != nil && p.Transport.SampleRate == 96000, "transport %+v", p.Transport)
+		}, t.Save()
+	}},
 }
 
 // track returns p's track named name, or an empty one when there is none.

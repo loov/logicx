@@ -1163,16 +1163,43 @@ func TestTransport_DecodesWhatLogicSet(t *testing.T) {
 	for fixture, want := range map[string]Transport{
 		// Logic starts with a cycle over bars 1 to 5, the end at bar 129 and
 		// bar 1 at one hour.
-		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), time.Hour, 0, nil, nil},
-		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), time.Hour, 0, nil, nil},
-		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), time.Hour, 0, nil, nil},
-		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), 10 * time.Second, bar(1), nil, nil},
+		"mixer-base.logicx":     {false, bar(1), bar(5), bar(129), time.Hour, 0, 44100, nil, nil, sampleRate{}},
+		"settings-cycle.logicx": {true, bar(3), bar(7), bar(129), time.Hour, 0, 44100, nil, nil, sampleRate{}},
+		"settings-end.logicx":   {false, bar(1), bar(5), bar(50), time.Hour, 0, 44100, nil, nil, sampleRate{}},
+		"settings-smpte.logicx": {false, bar(1), bar(5), bar(129), 10 * time.Second, bar(1), 44100, nil, nil, sampleRate{}},
 	} {
 		got := *parseFixtureProject(t, fixture).Transport
-		got.chunk, got.tempo = nil, nil
+		got.chunk, got.tempo, got.rate = nil, nil, sampleRate{}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s transport = %+v, want %+v", fixture, got, want)
 		}
+	}
+}
+
+func TestTransport_SampleRateReproducesLogic(t *testing.T) {
+	rate := func(fixture string) []byte {
+		data := findTransport(parseFixtureProject(t, fixture).Chunks).chunk.Data
+		return data[songRate : songRateMult+2]
+	}
+	logic := parseFixtureProject(t, "settings-rate-96.logicx").Transport
+	if logic.SampleRate != 96000 {
+		t.Fatalf("sample rate = %d, want 96000", logic.SampleRate)
+	}
+	p := parseFixtureProject(t, "mixer-base.logicx")
+	p.Transport.SampleRate = 96000
+	if err := p.Transport.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := p.Transport.chunk.Data[songRate : songRateMult+2]
+	if want := rate("settings-rate-96.logicx"); !bytes.Equal(got, want) {
+		t.Errorf("rate bytes = % x, want Logic's % x", got, want)
+	}
+	if reparse(t, &p).Transport.SampleRate != 96000 {
+		t.Error("the rate did not survive a reparse")
+	}
+	p.Transport.SampleRate = 32000
+	if p.Transport.Save() == nil {
+		t.Error("Save() accepted 32 kHz")
 	}
 }
 
