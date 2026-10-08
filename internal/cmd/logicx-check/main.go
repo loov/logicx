@@ -230,6 +230,27 @@ var edits = []edit{
 				"sends %+v", sends)
 		}, s.Save()
 	}},
+	{"automation-samples", "mixer-automation", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// Drop the samples Logic keeps between automation points; Logic's
+		// save shows whether it puts them back.
+		for _, chunk := range p.Chunks {
+			chunk.Events = slices.DeleteFunc(chunk.Events, func(e *logicx.Event) bool {
+				return len(e.Data) >= 16 && e.Data[0] == 0x50 && e.Data[15]&0x40 != 0
+			})
+		}
+		points := map[string]int{}
+		for _, t := range p.Tracks {
+			points[t.Name] = len(t.Automation)
+		}
+		return func(p logicx.ProjectData) error {
+			for _, t := range p.Tracks {
+				if n, ok := points[t.Name]; ok && len(t.Automation) != n {
+					return fmt.Errorf("%s has %d automation points, want %d", t.Name, len(t.Automation), n)
+				}
+			}
+			return nil
+		}, nil
+	}},
 }
 
 // track returns p's track named name, or an empty one when there is none.
