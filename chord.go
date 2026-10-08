@@ -180,16 +180,20 @@ func decodeChordEvents(chunk *Chunk) []Chord {
 // decodeChordLink decodes an 80-byte locator on the global harmony track.
 func decodeChordLink(data []byte) (chordLink, bool) {
 	var link chordLink
-	ok := record.Decode(data,
+	return link, record.Decode(data, link.fields()...)
+}
+
+// fields is the layout of a locator on the global harmony track.
+func (l *chordLink) fields() []record.Field {
+	return []record.Field{
 		record.Equal(0, 0x20, 0),
-		record.Uint16LE(2, &link.positionFraction),
-		record.Uint32LE(4, &link.position),
+		record.Uint16LE(2, &l.positionFraction),
+		record.Uint32LE(4, &l.position),
 		record.Equal(20, 1, 0, 0, 0x89),
-		record.Uint32LE(32, &link.sequence),
+		record.Uint32LE(32, &l.sequence),
 		record.Equal(36, 0, 0, 0, 0x88),
 		record.Equal(68, 0, 0, 0, 0x88),
-	)
-	return link, ok
+	}
 }
 
 // decodeChordEvent decodes a chord or scale event. Ornaments, arpeggios and

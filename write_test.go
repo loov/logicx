@@ -367,3 +367,29 @@ func TestTrackAndAudioUnit_SaveNames(t *testing.T) {
 		t.Fatal("Save() accepted a track name longer than its field")
 	}
 }
+
+func TestUnknown_ExcludesDecodedFields(t *testing.T) {
+	project := parseFixtureProject(t, "tempo-map-steps.logicx")
+	var tempos, chunks int
+	for _, r := range project.Unknown() {
+		if r.Event == nil {
+			chunks++
+		}
+		if r.Kind != "tempo" {
+			continue
+		}
+		tempos++
+		// Bytes 0..7 hold the type, fraction and position, and 16..19 the
+		// tempo; none of them may be listed as unknown.
+		for _, s := range r.Spans {
+			for i := s.Offset; i < s.Offset+len(s.Data); i++ {
+				if i < 8 || i >= 16 && i < 20 {
+					t.Fatalf("tempo byte %d listed as unknown: %+v", i, r.Spans)
+				}
+			}
+		}
+	}
+	if tempos != len(project.TempoChanges) || chunks == 0 {
+		t.Fatalf("got %d tempo records for %d tempo changes, %d chunks", tempos, len(project.TempoChanges), chunks)
+	}
+}

@@ -31,3 +31,19 @@ func TestEncode_RoundTripsAndKeepsUndecodedBytes(t *testing.T) {
 		t.Fatal("Encode() modified its input")
 	}
 }
+
+func TestUnknown_ListsUndescribedRuns(t *testing.T) {
+	// A tag, an undescribed byte, a two-byte name, then two undescribed bytes
+	// and a value counted from the name's end.
+	data := []byte{0xaa, 0x01, 2, 0, 'h', 'i', 0xbb, 0xcc, 7}
+	var name string
+	var value uint8
+	spans := Unknown(data, Equal(0, 0xaa), String16(2, &name, Uint8(2, &value)))
+	if len(spans) != 2 || spans[0].Offset != 1 || string(spans[0].Data) != "\x01" ||
+		spans[1].Offset != 6 || string(spans[1].Data) != "\xbb\xcc" {
+		t.Fatalf("Unknown() = %+v", spans)
+	}
+	if spans := Unknown(data, At(6, Uint16LE(0, new(uint16)))); len(spans) != 2 || spans[1].Offset != 8 {
+		t.Fatalf("Unknown() with At = %+v", spans)
+	}
+}

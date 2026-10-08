@@ -25,6 +25,8 @@ type Field interface {
 	// encode writes the field into data and returns the result, which is a
 	// new slice when the field changes the record's length.
 	encode(data []byte) ([]byte, error)
+	// cover marks the bytes of data the field describes.
+	cover(data []byte, mark func(start, end int))
 }
 
 // Decode applies fields in order and reports whether they all matched.
@@ -60,6 +62,12 @@ type fixed struct {
 func (f fixed) decode(data []byte) bool {
 	field, ok := at(data, f.offset, f.size)
 	return ok && f.get(field)
+}
+
+func (f fixed) cover(data []byte, mark func(start, end int)) {
+	if _, ok := at(data, f.offset, f.size); ok {
+		mark(f.offset, f.offset+f.size)
+	}
 }
 
 func (f fixed) encode(data []byte) ([]byte, error) {
@@ -150,6 +158,8 @@ type length int
 
 func (n length) decode(data []byte) bool { return len(data) == int(n) }
 
+func (n length) cover([]byte, func(start, end int)) {}
+
 func (n length) encode(data []byte) ([]byte, error) {
 	if len(data) != int(n) {
 		return nil, fmt.Errorf("record: %d bytes, want %d", len(data), int(n))
@@ -206,6 +216,15 @@ func (f prefixed) decode(data []byte) bool {
 	return Decode(data[end:], f.tail...)
 }
 
+func (f prefixed) cover(data []byte, mark func(start, end int)) {
+	end, ok := f.span(data)
+	if !ok {
+		return
+	}
+	mark(f.offset, end)
+	coverAt(data, end, f.tail, mark)
+}
+
 func (f prefixed) encode(data []byte) ([]byte, error) {
 	end, ok := f.span(data)
 	if !ok {
@@ -229,6 +248,74 @@ func (f prefixed) encode(data []byte) ([]byte, error) {
 	out = binary.LittleEndian.AppendUint16(out, uint16(len(body)/f.unit))
 	out = append(out, body...)
 	return append(out, tail...), nil
+}
+
+// At applies fields to the bytes from offset on, their offsets counted from
+// there: for a record that repeats a layout, such as trailing atoms.
+func At(offset int, fields ...Field) Field { return within{offset, fields} }
+
+type within struct {
+	offset int
+	fields []Field
+}
+
+func (w within) decode(data []byte) bool {
+	return w.offset >= 0 && w.offset <= len(data) && Decode(data[w.offset:], w.fields...)
+}
+
+func (w within) encode(data []byte) ([]byte, error) {
+	if w.offset < 0 || w.offset > len(data) {
+		return nil, fmt.Errorf("record: offset %d past the end of %d bytes", w.offset, len(data))
+	}
+	tail, err := Encode(data[w.offset:], w.fields...)
+	if err != nil {
+		return nil, err
+	}
+	return append(slices.Clip(data[:w.offset]), tail...), nil
+}
+
+func (w within) cover(data []byte, mark func(start, end int)) {
+	coverAt(data, w.offset, w.fields, mark)
+}
+
+// coverAt covers fields applied to the bytes from offset on.
+func coverAt(data []byte, offset int, fields []Field, mark func(start, end int)) {
+	if offset < 0 || offset > len(data) {
+		return
+	}
+	for _, field := range fields {
+		field.cover(data[offset:], func(start, end int) { mark(offset+start, offset+end) })
+	}
+}
+
+// Span is a run of bytes within a record.
+type Span struct {
+	Offset int
+	Data   []byte
+}
+
+// Unknown returns the runs of data that no field describes, in order. Fields
+// that do not fit data describe nothing.
+func Unknown(data []byte, fields ...Field) []Span {
+	known := make([]bool, len(data))
+	coverAt(data, 0, fields, func(start, end int) {
+		for i := max(start, 0); i < min(end, len(data)); i++ {
+			known[i] = true
+		}
+	})
+	var spans []Span
+	for i := 0; i < len(data); {
+		if known[i] {
+			i++
+			continue
+		}
+		start := i
+		for i < len(data) && !known[i] {
+			i++
+		}
+		spans = append(spans, Span{start, data[start:i]})
+	}
+	return spans
 }
 
 // at returns the size bytes at offset, reporting false when out of range.

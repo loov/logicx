@@ -351,15 +351,19 @@ func decodeRegionLinks(events []*Event) []regionLink {
 // decodeRegionLink decodes an 80-byte arrangement locator.
 func decodeRegionLink(data []byte) (regionLink, bool) {
 	var link regionLink
-	ok := record.Decode(data,
+	return link, record.Decode(data, link.fields()...)
+}
+
+// fields is the layout of an arrangement locator.
+func (l *regionLink) fields() []record.Field {
+	return []record.Field{
 		record.Equal(0, 0x20, 0),
-		record.Uint32LE(4, &link.position),
-		record.Uint32LE(28, &link.duration),
-		record.Uint32LE(32, &link.sequence),
+		record.Uint32LE(4, &l.position),
+		record.Uint32LE(28, &l.duration),
+		record.Uint32LE(32, &l.sequence),
 		record.Equal(36, 0, 0, 0, 0x88),
 		record.Equal(68, 0, 0, 0, 0x88),
-	)
-	return link, ok
+	}
 }
 
 // materializeRegion places a source sequence at a link's position, expanding
@@ -703,14 +707,19 @@ type scoreSlurSegment struct {
 // decodeScoreSlurSegment decodes a 16-byte slur marker that trails a note.
 func decodeScoreSlurSegment(data []byte) (scoreSlurSegment, bool) {
 	var segment scoreSlurSegment
-	if !record.Decode(data,
-		record.Equal(0, 0, 0, 0, 0, 0, 0, 0, 0x8c, 0, 0, 0, 0, 0, 0, 0),
-		record.Uint8(15, &segment.code),
-		record.Copy(0, segment.raw[:]),
-	) || segment.code < 1 || segment.code > 3 {
+	if !record.Decode(data, append(segment.fields(), record.Copy(0, segment.raw[:]))...) ||
+		segment.code < 1 || segment.code > 3 {
 		return scoreSlurSegment{}, false
 	}
 	return segment, true
+}
+
+// fields is the layout of a slur marker atom.
+func (s *scoreSlurSegment) fields() []record.Field {
+	return []record.Field{
+		record.Equal(0, 0, 0, 0, 0, 0, 0, 0, 0x8c, 0, 0, 0, 0, 0, 0, 0),
+		record.Uint8(15, &s.code),
+	}
 }
 
 // attachScoreSlurs turns per-note slur markers into start and stop endpoints.
