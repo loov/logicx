@@ -132,6 +132,10 @@ func eventLayout(data []byte) (string, []record.Field) {
 // atomLayout returns the layout of a note's trailing atom, or nil when it is
 // none this package decodes.
 func atomLayout(atom []byte) []record.Field {
+	var a NoteAttributes
+	if a.decodeAtom(atom) {
+		return []record.Field{record.Uint8(2, new(uint8)), record.Copy(4, make([]byte, 4))}
+	}
 	if s, ok := decodeScoreSlurSegment(atom); ok {
 		return s.fields()
 	}

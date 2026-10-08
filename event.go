@@ -177,10 +177,13 @@ func (c *Chunk) reorder(event *Event) {
 }
 
 // atomRef locates a 16-byte atom within a record, for the score symbols a
-// note record carries in its trailing atoms.
+// note record carries in its trailing atoms. tag is the atom's byte 7, which
+// tells its kind: atoms move when others are added before them, and a
+// reference whose atom moved must not write into whatever replaced it.
 type atomRef struct {
 	eventRef
 	offset int
+	tag    byte
 }
 
 // atom returns the atom's bytes.
@@ -191,8 +194,8 @@ func (r atomRef) save(what string, fields ...record.Field) error {
 	if err := r.check(what); err != nil {
 		return err
 	}
-	if r.offset+atomSize > len(r.event.Data) {
-		return fmt.Errorf("logicx: %s is no longer in its record", what)
+	if r.offset+atomSize > len(r.event.Data) || r.atom()[7] != r.tag {
+		return fmt.Errorf("logicx: %s moved within its note; refresh the project", what)
 	}
 	atom, err := record.Encode(r.atom(), fields...)
 	if err != nil {

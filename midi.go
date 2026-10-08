@@ -81,6 +81,7 @@ type MIDINote struct {
 	ScoreOrnaments     []ScoreOrnament
 	ScoreArpeggios     []ScoreArpeggio
 	ScoreSlurs         []ScoreSlur
+	Attributes         NoteAttributes
 	Raw                [32]byte
 	ref                eventRef
 	// flags holds byte 15: 0x10 is Muted, 0x80 marks a selected note, and
@@ -535,17 +536,20 @@ func findMIDINotes(chunk *Chunk) []MIDINote {
 		var slurSegment scoreSlurSegment
 		for offset := 32; offset+16 <= len(event.Data); offset += 16 {
 			atom := event.Data[offset : offset+16]
+			if note.Attributes.decodeAtom(atom) {
+				continue
+			}
 			if slur, ok := decodeScoreSlurSegment(atom); ok {
 				slurSegment = slur
 				continue
 			}
 			if fermata, ok := decodeScoreFermata(atom); ok {
-				fermata.ref = atomRef{ref, offset}
+				fermata.ref = atomRef{ref, offset, atom[7]}
 				note.ScoreFermatas = append(note.ScoreFermatas, fermata)
 				continue
 			}
 			if articulation, ok := decodeScoreArticulation(atom); ok {
-				articulation.ref = atomRef{ref, offset}
+				articulation.ref = atomRef{ref, offset, atom[7]}
 				note.ScoreArticulations = append(note.ScoreArticulations, articulation)
 			}
 		}
@@ -601,6 +605,172 @@ func (n *MIDINote) fields(status, release *uint8) []record.Field {
 	}
 }
 
+// NoteAttributes are a note's Note Attributes in the Score Editor; the zero
+// value leaves every one at its default. Logic stores them in trailing atoms
+// of the note record, each atom only while one of its attributes is set.
+//
+// Each was found by setting it on a note in Logic and comparing the saves. A
+// menu attribute holds the menu item's code: the codes seen are listed, and
+// the rest are expected to follow the menu's order.
+type NoteAttributes struct {
+	// EnharmonicShift respells the note: -2 is bb, -1 b, 1 # and 2 ##.
+	EnharmonicShift int8
+	// AccidentalType forces, hides or guides the accidental.
+	AccidentalType AccidentalType
+	// AccidentalPosition moves the accidental horizontally.
+	AccidentalPosition int8
+	// NoteHead is 3 for a hidden head and 4 for a cross; later shapes follow
+	// in the menu's order.
+	NoteHead uint8
+	// Tie is 2 for a downward tie; 1 is expected to be up and 3 hidden.
+	Tie uint8
+	// StemDirection is 2 for down; 1 is expected to be up and 3 hidden.
+	StemDirection uint8
+	// StemPosition is 3 for a stem at the side.
+	StemPosition uint8
+	// Syncopation is 2 to defeat it; 1 is expected to force it.
+	Syncopation uint8
+	// Interpretation is 1 to force it; 2 is expected to defeat it.
+	Interpretation uint8
+	// HorizontalPosition moves the note horizontally.
+	HorizontalPosition int8
+	// Size changes the note's size.
+	Size int8
+}
+
+// AccidentalType is the Accidental Type of a note's attributes.
+type AccidentalType uint8
+
+const (
+	AccidentalAuto  AccidentalType = 0
+	AccidentalGuide AccidentalType = 0x08
+	AccidentalForce AccidentalType = 0x10
+	AccidentalHide  AccidentalType = 0x20
+)
+
+// Tags of the note attribute atoms, in the order Logic stores them, ahead of
+// a note's articulations.
+const (
+	atomStem       = 0x81 // stem, syncopation and interpretation
+	atomAccidental = 0x82 // spelling, accidental, note head and tie
+	atomPlacement  = 0x83 // horizontal position and size
+)
+
+// decodeAtom reads the attributes an attribute atom holds, reporting whether
+// atom is one.
+func (a *NoteAttributes) decodeAtom(atom []byte) bool {
+	switch atom[7] {
+	case atomStem:
+		a.Syncopation, a.Interpretation = atom[2]&0x03, atom[2]>>4&0x03
+		a.StemDirection, a.StemPosition = atom[6]&0x03, atom[6]>>2&0x03
+	case atomAccidental:
+		if atom[4]&0x07 > 4 {
+			return false
+		}
+		a.EnharmonicShift = int8(atom[4]&0x07) - 2
+		a.AccidentalType = AccidentalType(atom[4] & 0x38)
+		a.AccidentalPosition = int8(atom[5])
+		a.NoteHead, a.Tie = atom[6]&0x1f, atom[6]>>5&0x03
+	case atomPlacement:
+		a.HorizontalPosition, a.Size = int8(atom[4]), int8(atom[6])
+	default:
+		return false
+	}
+	return true
+}
+
+// encodeAtom writes the attributes of the atom tagged tag over atom, a copy of
+// the existing one or nil, keeping the bits no attribute uses.
+func (a NoteAttributes) encodeAtom(tag byte, atom []byte) []byte {
+	out := make([]byte, atomSize)
+	copy(out, atom)
+	out[7] = tag
+	switch tag {
+	case atomStem:
+		out[2] = out[2]&^0x33 | a.Syncopation | a.Interpretation<<4
+		out[6] = out[6]&^0x0f | a.StemDirection | a.StemPosition<<2
+	case atomAccidental:
+		out[4] = out[4]&^0x3f | uint8(a.EnharmonicShift+2) | uint8(a.AccidentalType)
+		out[5] = uint8(a.AccidentalPosition)
+		out[6] = out[6]&^0x7f | a.NoteHead | a.Tie<<5
+	case atomPlacement:
+		out[4], out[6] = uint8(a.HorizontalPosition), uint8(a.Size)
+	}
+	return out
+}
+
+// validate reports attributes that do not fit their stored fields.
+func (a NoteAttributes) validate() error {
+	switch {
+	case a.EnharmonicShift < -2 || a.EnharmonicShift > 2:
+		return fmt.Errorf("logicx: enharmonic shift %d out of range", a.EnharmonicShift)
+	case a.AccidentalType != AccidentalAuto && a.AccidentalType != AccidentalGuide &&
+		a.AccidentalType != AccidentalForce && a.AccidentalType != AccidentalHide:
+		return fmt.Errorf("logicx: accidental type %#x not known", uint8(a.AccidentalType))
+	case a.NoteHead > 0x1f || a.Tie > 3 || a.StemDirection > 3 || a.StemPosition > 3 || a.Syncopation > 3 || a.Interpretation > 3:
+		return fmt.Errorf("logicx: note attributes %+v out of range", a)
+	}
+	return nil
+}
+
+// rewrite returns a note record with its attribute atoms set from a: an atom
+// is added, in tag order, when one of its attributes is set, and removed when
+// none is and it holds nothing else.
+func (a NoteAttributes) rewrite(data []byte) []byte {
+	var atoms [][]byte
+	for offset := 32; offset+atomSize <= len(data); offset += atomSize {
+		atoms = append(atoms, data[offset:offset+atomSize])
+	}
+	for _, tag := range []byte{atomStem, atomAccidental, atomPlacement} {
+		i := slices.IndexFunc(atoms, func(atom []byte) bool { return atom[7] == tag })
+		var existing []byte
+		if i >= 0 {
+			existing = atoms[i]
+		}
+		atom := a.encodeAtom(tag, existing)
+		unset := bytes.Equal(atom, NoteAttributes{}.encodeAtom(tag, nil))
+		switch {
+		case i >= 0 && unset:
+			atoms = slices.Delete(atoms, i, i+1)
+		case i >= 0:
+			atoms[i] = atom
+		case !unset:
+			at := slices.IndexFunc(atoms, func(atom []byte) bool { return atom[7] > tag })
+			if at < 0 {
+				at = len(atoms)
+			}
+			atoms = slices.Insert(atoms, at, atom)
+		}
+	}
+	out := slices.Clip(data[:32])
+	for _, atom := range atoms {
+		out = append(out, atom...)
+	}
+	return out
+}
+
+// relinkAtoms points n's articulations and fermatas at their atoms again,
+// after attribute atoms were added or removed ahead of them.
+func (n *MIDINote) relinkAtoms() {
+	data := n.ref.event.Data
+	articulation, fermata := 0, 0
+	for offset := 32; offset+atomSize <= len(data); offset += atomSize {
+		atom := data[offset : offset+atomSize]
+		if _, ok := decodeScoreSlurSegment(atom); ok {
+			continue
+		}
+		if _, ok := decodeScoreFermata(atom); ok && fermata < len(n.ScoreFermatas) {
+			n.ScoreFermatas[fermata].ref = atomRef{n.ref, offset, atom[7]}
+			fermata++
+			continue
+		}
+		if _, ok := decodeScoreArticulation(atom); ok && articulation < len(n.ScoreArticulations) {
+			n.ScoreArticulations[articulation].ref = atomRef{n.ref, offset, atom[7]}
+			articulation++
+		}
+	}
+}
+
 // widenRelease returns the eight-bit form of a release velocity that Logic
 // stores beside it: the part above 64, widened from six bits by repeating its
 // top bits, and zero for 64 and below. It holds for all 18,051 notes in 278
@@ -624,6 +794,16 @@ func (n *MIDINote) Save() error {
 		return fmt.Errorf("logicx: note pitch %d, velocity %d, release velocity %d or channel %d out of range",
 			n.Pitch, n.Velocity, n.ReleaseVelocity, n.Channel)
 	}
+	if err := n.Attributes.validate(); err != nil {
+		return err
+	}
+	if err := n.ref.check("note"); err != nil {
+		return err
+	}
+	if data := n.Attributes.rewrite(n.ref.event.Data); !bytes.Equal(data, n.ref.event.Data) {
+		n.ref.event.Data = data
+		n.relinkAtoms()
+	}
 	status, release := eventNote|(n.Channel-1), widenRelease(n.ReleaseVelocity)
 	n.flags &^= noteMuted
 	if n.Muted {
@@ -636,8 +816,8 @@ func (n *MIDINote) Save() error {
 	return nil
 }
 
-// Delete removes n's record, with the articulations, fermatas and slur
-// markers stored in it. Lyrics, ornaments and arpeggios are records of their
+// Delete removes n's record, with the attributes, articulations, fermatas and
+// slur markers stored in it. Lyrics, ornaments and arpeggios are records of their
 // own and are kept.
 func (n *MIDINote) Delete() error { return n.ref.delete("note") }
 

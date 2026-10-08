@@ -3,6 +3,7 @@
 package logicx
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io/fs"
 	"os"
@@ -686,5 +687,111 @@ func TestParseProjectData_NotesOnEveryChannel(t *testing.T) {
 		if note.Channel != uint8(i%16+1) {
 			t.Fatalf("note %d on channel %d, want %d", i, note.Channel, i%16+1)
 		}
+	}
+}
+
+// noteAttributeEdits are the Note Attributes set in Logic on the first notes
+// of the note-attributes fixture, and on notes 1 to 5 of note-spelling.
+var noteAttributeEdits = map[string][]NoteAttributes{
+	"note-attributes.logicx": {
+		{AccidentalType: AccidentalHide},
+		{AccidentalType: AccidentalGuide},
+		{AccidentalPosition: 3},
+		{NoteHead: 4},
+		{Tie: 2},
+		{StemDirection: 2},
+		{StemPosition: 3},
+		{Syncopation: 2},
+		{Interpretation: 1},
+		{HorizontalPosition: 5},
+		{Size: 2},
+		{NoteHead: 3},
+	},
+	"note-spelling.logicx": {
+		{},
+		{EnharmonicShift: 2},
+		{EnharmonicShift: 1},
+		{EnharmonicShift: -1},
+		{AccidentalType: AccidentalForce},
+		{EnharmonicShift: -2, AccidentalType: AccidentalForce},
+	},
+}
+
+func TestNoteAttributes_DecodeWhatLogicSet(t *testing.T) {
+	// The original fixture, imported from MusicXML, already carries note heads
+	// on two notes: a cross (4) and, by the menu's order, a filled diamond (7).
+	original := parseFixtureProject(t, "musicxml-roundtrip.logicx").Sequences[0].Notes
+	if original[37].Attributes.NoteHead != 7 || original[38].Attributes.NoteHead != 4 {
+		t.Errorf("imported note heads = %d, %d", original[37].Attributes.NoteHead, original[38].Attributes.NoteHead)
+	}
+	for fixture, want := range noteAttributeEdits {
+		notes := parseFixtureProject(t, fixture).Sequences[0].Notes
+		for i, n := range notes {
+			w := original[i].Attributes
+			if i < len(want) {
+				w = want[i]
+			}
+			if n.Attributes != w {
+				t.Errorf("%s note %d: attributes %+v, want %+v", fixture, i, n.Attributes, w)
+			}
+		}
+	}
+}
+
+func TestNoteAttributes_SaveReproducesLogic(t *testing.T) {
+	for fixture, edits := range noteAttributeEdits {
+		logic := parseFixtureProject(t, fixture).Sequences[0].Notes
+		project := parseFixtureProject(t, "musicxml-roundtrip.logicx")
+		for i, a := range edits {
+			note := project.Sequences[0].Notes[i]
+			// Respelling some notes in Logic also moved them a semitone.
+			note.Attributes, note.Pitch = a, logic[i].Pitch
+			if err := note.Save(); err != nil {
+				t.Fatal(err)
+			}
+			ours, theirs := note.ref.event.Data, logic[i].ref.event.Data
+			if len(ours) != len(theirs) || !bytes.Equal(ours[:15], theirs[:15]) || !bytes.Equal(ours[16:], theirs[16:]) ||
+				ours[15]&^0x01 != theirs[15]&^0x01 {
+				t.Errorf("%s note %d:\n ours  % x\n Logic % x", fixture, i, ours, theirs)
+			}
+		}
+	}
+}
+
+func TestNoteAttributes_ClearingRemovesTheAtom(t *testing.T) {
+	project := parseFixtureProject(t, "note-attributes.logicx")
+	note := project.Sequences[0].Notes[5] // stem down, ahead of a marcato
+	if len(note.ScoreArticulations) != 1 {
+		t.Fatalf("articulations = %+v", note.ScoreArticulations)
+	}
+	note.Attributes = NoteAttributes{}
+	if err := note.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if len(note.ref.event.Data) != 48 {
+		t.Fatalf("note record is %d bytes, want 48", len(note.ref.event.Data))
+	}
+	// The marcato moved up into the removed atom's place; saving it must
+	// write there.
+	articulation := note.ScoreArticulations[0]
+	articulation.Kind, articulation.Flipped = ScoreArticulationAccent, false
+	if err := articulation.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := reparse(t, &project).Sequences[0].Notes[5]
+	if got.Attributes != (NoteAttributes{}) || len(got.ScoreArticulations) != 1 || got.ScoreArticulations[0].Kind != ScoreArticulationAccent {
+		t.Fatalf("note = %+v %+v", got.Attributes, got.ScoreArticulations)
+	}
+
+	// A copy taken before the note was saved points at a moved atom.
+	project = parseFixtureProject(t, "note-attributes.logicx")
+	note = project.Sequences[0].Notes[5]
+	stale := note.ScoreArticulations[0]
+	note.Attributes = NoteAttributes{}
+	if err := note.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Save(); err == nil {
+		t.Fatal("Save() wrote an articulation whose atom moved")
 	}
 }
