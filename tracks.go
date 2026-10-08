@@ -109,9 +109,10 @@ type Track struct {
 	// mixer reports whether the strip is long enough to hold the mixer
 	// settings.
 	mixer bool
-	// name is Name as decoded, so that Save writes it only when it was
-	// changed.
-	name string
+	// name and color are Name and Color as decoded, so that Save writes them
+	// only when they were changed.
+	name  string
+	color uint8
 }
 
 // Mixer settings within a channel strip chunk. The volume is stored twice:
@@ -324,6 +325,22 @@ func findAutomation(chunks []*Chunk) map[uint32][]AutomationPoint {
 	return points
 }
 
+// environmentStrip returns the channel strip an environment object names,
+// stored plus one after its name, at the next even offset.
+func environmentStrip(data []byte) (uint16, bool) {
+	var name string
+	if !record.Decode(data, record.String16(environmentNameLength, &name)) {
+		return 0, false
+	}
+	at := environmentNameLength + 2 + len(name)
+	at += at & 1
+	if at+2 > len(data) {
+		return 0, false
+	}
+	strip := binary.LittleEndian.Uint16(data[at:])
+	return strip - 1, strip != 0
+}
+
 // stripEnvironment finds the environment object of a channel strip: the
 // strip holds the ID that ends each object, its own first and then those of
 // the objects it routes to.
@@ -443,8 +460,16 @@ const (
 )
 
 // channelStripVariant is the header field that marks an AuCO chunk as a
-// channel strip rather than another kind of audio configuration.
+// channel strip rather than another kind of audio configuration. Its first
+// byte is a version, 5 to 7 depending on the Logic that wrote the project,
+// with the same record layout in each.
 var channelStripVariant = []byte{0x07, 0x00, 0x0e, 0x00}
+
+// isChannelStrip reports whether chunk is a channel strip.
+func isChannelStrip(chunk *Chunk) bool {
+	v := chunk.Header[channelStripHeaderStart : channelStripHeaderStart+4]
+	return chunk.Type == channelStripChunk && v[0] >= 5 && v[0] <= channelStripVariant[0] && bytes.Equal(v[1:], channelStripVariant[1:])
+}
 
 // findTracks decodes one channel strip per chunk. The record is a leading
 // byte, a name padded to 16 bytes, and an 8-byte descriptor. Chunks are in
@@ -455,15 +480,17 @@ func findTracks(chunks []*Chunk) []Track {
 	sends := findSends(chunks)
 	automation := findAutomation(chunks)
 	var objects []*Chunk
+	byStrip := make(map[uint16][]*Chunk)
 	for _, chunk := range chunks {
 		if chunk.Type == environmentChunk {
 			objects = append(objects, chunk)
+			if strip, ok := environmentStrip(chunk.Data); ok {
+				byStrip[strip] = append(byStrip[strip], chunk)
+			}
 		}
 	}
 	for _, chunk := range chunks {
-		if chunk.Type != channelStripChunk ||
-			!bytes.Equal(chunk.Header[channelStripHeaderStart:channelStripHeaderStart+4], channelStripVariant) ||
-			len(chunk.Data) < channelStripRecord+channelStripRecordSize {
+		if !isChannelStrip(chunk) || len(chunk.Data) < channelStripRecord+channelStripRecordSize {
 			continue
 		}
 		strip := chunk.Data[channelStripRecord : channelStripRecord+channelStripRecordSize]
@@ -496,10 +523,27 @@ func findTracks(chunks []*Chunk) []Track {
 		}
 		track.Sends = sends[track.strip]
 		slices.SortFunc(track.Sends, func(a, b Send) int { return cmp.Compare(a.Index, b.Index) })
-		if track.environment = stripEnvironment(chunk.Data, objects); track.environment != nil {
-			track.Color = track.environment.Data[environmentColor]
-			track.Automation = automation[chunkSequenceID(track.environment).sequence]
+		// Older projects have no IDs to find the strip's own object by; then
+		// it is the only object naming the strip.
+		track.environment = stripEnvironment(chunk.Data, objects)
+		if named := byStrip[track.strip]; track.environment == nil && len(named) == 1 {
+			track.environment = named[0]
 		}
+		if track.environment != nil {
+			track.Color = track.environment.Data[environmentColor]
+			track.color = track.Color
+		}
+		// Automation may belong to any of the strip's objects, such as the
+		// track's own object besides the strip's.
+		for _, object := range byStrip[track.strip] {
+			track.Automation = append(track.Automation, automation[chunkSequenceID(object).sequence]...)
+		}
+		if track.environment != nil && !slices.Contains(byStrip[track.strip], track.environment) {
+			track.Automation = append(track.Automation, automation[chunkSequenceID(track.environment).sequence]...)
+		}
+		slices.SortStableFunc(track.Automation, func(a, b AutomationPoint) int {
+			return cmp.Or(cmp.Compare(a.Position, b.Position), cmp.Compare(a.Fraction, b.Fraction))
+		})
 		tracks = append(tracks, track)
 	}
 	return tracks
@@ -539,13 +583,15 @@ func (t *Track) Save() error {
 	if err != nil {
 		return fmt.Errorf("logicx: track %q: %w", t.Name, err)
 	}
-	if t.environment != nil {
+	// Older projects hold codes past the palette, so only a changed color
+	// is checked.
+	if t.environment != nil && t.Color != t.color {
 		if t.Color >= paletteSize {
 			return fmt.Errorf("logicx: track %q: color %d out of range", t.Name, t.Color)
 		}
 		t.environment.Data[environmentColor] = t.Color
 	}
-	t.chunk.Data, t.name = data, t.Name
+	t.chunk.Data, t.name, t.color = data, t.Name, t.Color
 	return nil
 }
 
@@ -607,7 +653,8 @@ func assignAudioUnits(tracks []Track, units []AudioUnit) {
 
 // trackKind classifies a channel strip from its 8-byte descriptor.
 func trackKind(d []byte) TrackKind {
-	switch d[0] {
+	// A few audio and instrument strips also carry 0x10, meaning unknown.
+	switch d[0] &^ 0x10 {
 	case 0x89:
 		return TrackKindMaster
 	case 0x49:

@@ -5,6 +5,7 @@ package logicx
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -832,5 +833,31 @@ func TestTempoChange_SaveWritesThroughTheTree(t *testing.T) {
 	tempo.BPM = 0
 	if err := tempo.Save(); err == nil {
 		t.Fatal("Save() accepted a tempo of 0 BPM")
+	}
+}
+
+func TestParseProjectData_ChannelStripVersions(t *testing.T) {
+	// Logic versions differ only in the version byte of the strip's header;
+	// an unknown later version is left alone.
+	data := make([]byte, 24)
+	copy(data, []byte{0x23, 0x47, 0xc0, 0xab})
+	for _, version := range []byte{5, 6, 7, 8} {
+		payload := make([]byte, channelStripRecord)
+		record := append([]byte{0x20}, fmt.Sprintf("Audio %d", version)...)
+		record = append(record, make([]byte, 16-len(record))...)
+		record = append(record, 0xab, 0, 0, 0, 1, 0, 0, 0)
+		payload = append(payload, record...)
+		data = appendAudioChunk(data, "OCuA", []byte{version, 0, 0x0e, 0}, uint16(version), payload)
+	}
+	project, err := ParseProjectData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, track := range project.Tracks {
+		names = append(names, track.Name)
+	}
+	if !slices.Equal(names, []string{"Audio 5", "Audio 6", "Audio 7"}) {
+		t.Fatalf("tracks = %v", names)
 	}
 }

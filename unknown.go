@@ -182,8 +182,7 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 			return "environment", o.fields()
 		}
 	case channelStripChunk:
-		if bytes.Equal(chunk.Header[channelStripHeaderStart:channelStripHeaderStart+4], channelStripVariant) &&
-			len(d) >= channelStripRecord+channelStripRecordSize {
+		if isChannelStrip(chunk) && len(d) >= channelStripRecord+channelStripRecordSize {
 			descriptor := channelStripRecord + 16
 			return "channel strip", []record.Field{
 				record.CString(channelStripName, channelStripNameSize, new(string)),
