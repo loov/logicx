@@ -270,8 +270,23 @@ type AutomationPoint struct {
 	// [Track.Volume]), the pan from 0, fully left, to 127, and the mute as 0
 	// or 1.
 	Value uint32
-	ref   eventRef
+	// Curve bends the ramp from this point to the next, from -126 to 126 in
+	// steps of two; zero is straight. Over a fraction f of the way, the value
+	// covers f / (f + r·(1-f)) of the change, where r is 1 + Curve/10 for a
+	// positive Curve, which holds near this point's value longer, and the
+	// reciprocal of 1 + |Curve|/10 for a negative one. An SCurve is two such
+	// halves mirrored about the middle, with r = 1 + |Curve|/5.
+	Curve  int8
+	SCurve bool
+	ref    eventRef
 }
+
+// A point with a curve carries a second atom with the curve's byte. Its
+// lowest bit marks an S-curve.
+const (
+	automationCurveAtom = 0xbb
+	automationCurve     = atomSize + 6
+)
 
 // fields is the layout of an automation point; parameter holds the stored
 // form of Parameter.
@@ -286,7 +301,7 @@ func (a *AutomationPoint) fields(parameter *uint8) []record.Field {
 }
 
 // Save writes a back into its automation sequence, keeping the sequence in
-// time order. Logic also stores samples of the ramps between points, which
+// time order, and adds or removes its curve atom as Curve requires. Logic also stores samples of the ramps between points, which
 // it does not need: it draws and saves the automation from the points alone.
 // Save drops the samples of a's parameter rather than leave them stale.
 // Track.Automation is not updated; see [ProjectData.Refresh].
@@ -294,6 +309,13 @@ func (a *AutomationPoint) Save() error {
 	if a.Value > 127<<24 {
 		return fmt.Errorf("logicx: automation value %#x out of range", a.Value)
 	}
+	if a.Curve&1 != 0 || a.Curve == math.MinInt8 {
+		return fmt.Errorf("logicx: automation curve %d is not an even number from -126 to 126", a.Curve)
+	}
+	if err := a.ref.check("automation point"); err != nil {
+		return err
+	}
+	a.ref.event.Data = a.withCurve(a.ref.event.Data)
 	parameter := uint8(a.Parameter)
 	if err := a.ref.save("automation point", a.fields(&parameter)...); err != nil {
 		return err
@@ -319,6 +341,31 @@ func (a *AutomationPoint) Duplicate() (AutomationPoint, error) {
 	copied := *a
 	copied.ref = ref
 	return copied, err
+}
+
+// withCurve returns the point's record with its curve atom set from Curve
+// and SCurve, added after the first atom or removed when the ramp is
+// straight.
+func (a *AutomationPoint) withCurve(data []byte) []byte {
+	has := len(data) >= 2*atomSize && data[atomSize+7] == automationCurveAtom
+	code := uint8(a.Curve)
+	if a.SCurve {
+		code |= 1
+	}
+	switch {
+	case code == 0 && has:
+		return slices.Concat(data[:atomSize], data[2*atomSize:])
+	case code == 0:
+		return data
+	case !has:
+		atom := make([]byte, atomSize)
+		atom[7] = automationCurveAtom
+		data = slices.Concat(data[:atomSize], atom, data[atomSize:])
+	default:
+		data = slices.Clone(data)
+	}
+	data[automationCurve] = code
+	return data
 }
 
 // dropSamples removes the ramp samples of parameter from the sequence.
@@ -377,6 +424,10 @@ func findAutomation(chunks []*Chunk) map[uint32][]AutomationPoint {
 				Parameter: AutomationParameter(d[12]), Value: binary.LittleEndian.Uint32(d[8:]),
 				ref: eventRef{chunk, event},
 			})
+			if len(d) >= 2*atomSize && d[atomSize+7] == automationCurveAtom {
+				point := &points[track][len(points[track])-1]
+				point.Curve, point.SCurve = int8(d[automationCurve]&^1), d[automationCurve]&1 != 0
+			}
 		}
 	}
 	return points

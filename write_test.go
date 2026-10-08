@@ -5,6 +5,7 @@ package logicx
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io/fs"
 	"math"
 	"os"
@@ -1056,5 +1057,44 @@ func TestAutomationPoint_SaveDeleteDuplicate(t *testing.T) {
 	}
 	if len(samples) != 1 || samples[28] == 0 {
 		t.Errorf("samples by sequence = %v, want only Inst 2's", samples)
+	}
+}
+
+func TestAutomationPoint_Curves(t *testing.T) {
+	p := parseFixtureProject(t, "mixer-curves.logicx")
+	// As bent in Logic: up and down, gently and strongly, and two S-curves.
+	want := map[string][2]int{
+		"Inst 5": {98, 0}, "Inst 6": {18, 0}, "Inst 7": {-16, 0}, "Inst 8": {-100, 0},
+		"Inst 9": {60, 1}, "Inst 10": {-30, 1},
+	}
+	for name, w := range want {
+		a := trackNamed(t, &p, name).Automation[0]
+		if got := [2]int{int(a.Curve), map[bool]int{false: 0, true: 1}[a.SCurve]}; got != w {
+			t.Errorf("%s curve = %v, want %v", name, got, w)
+		}
+	}
+
+	// Bending a straight ramp adds the curve atom, straightening removes it,
+	// and the record stays whole for the sequence's next reader.
+	straight, bent := trackNamed(t, &p, "Inst 1").Automation[0], trackNamed(t, &p, "Inst 5").Automation[0]
+	straight.Curve, straight.SCurve = -40, true
+	bent.Curve = 0
+	if err := errors.Join(straight.Save(), bent.Save()); err != nil {
+		t.Fatal(err)
+	}
+	if len(straight.ref.event.Data) != 2*atomSize || len(bent.ref.event.Data) != atomSize {
+		t.Fatalf("records are %d and %d bytes", len(straight.ref.event.Data), len(bent.ref.event.Data))
+	}
+	got := reparse(t, &p)
+	if a := trackNamed(t, &got, "Inst 1").Automation[0]; a.Curve != -40 || !a.SCurve {
+		t.Errorf("bent point = %+v", a)
+	}
+	if a := trackNamed(t, &got, "Inst 5").Automation[0]; a.Curve != 0 || a.SCurve {
+		t.Errorf("straightened point = %+v", a)
+	}
+	odd := trackNamed(t, &got, "Inst 6").Automation[0]
+	odd.Curve = 3
+	if odd.Save() == nil {
+		t.Error("Save() accepted an odd curve")
 	}
 }

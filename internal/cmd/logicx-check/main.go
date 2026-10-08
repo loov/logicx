@@ -267,6 +267,17 @@ var edits = []edit{
 				"volume %+v, pan %+v, mute %+v", volume, pan, mute)
 		}, errors.Join(moved.Save(), gone.Delete(), unmute.Save())
 	}},
+	{"automation-curve", "mixer-curves", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		bend, flip, straighten := track(p, "Inst 1").Automation[0], track(p, "Inst 6").Automation[0], track(p, "Inst 8").Automation[0]
+		bend.Curve = 80
+		flip.Curve, flip.SCurve = -50, true
+		straighten.Curve = 0
+		return func(p logicx.ProjectData) error {
+			bend, flip, straighten := track(&p, "Inst 1").Automation[0], track(&p, "Inst 6").Automation[0], track(&p, "Inst 8").Automation[0]
+			return expect(bend.Curve == 80 && !bend.SCurve && flip.Curve == -50 && flip.SCurve && straighten.Curve == 0,
+				"curves %d %v, %d %v, %d", bend.Curve, bend.SCurve, flip.Curve, flip.SCurve, straighten.Curve)
+		}, errors.Join(bend.Save(), flip.Save(), straighten.Save())
+	}},
 }
 
 // track returns p's track named name, or an empty one when there is none.
