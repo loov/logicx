@@ -301,6 +301,31 @@ var edits = []edit{
 				got.End == want.End && got.SMPTEStart == want.SMPTEStart, "transport %+v", got)
 		}, t.Save()
 	}},
+	{"track-header", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		edits := map[string]func(*logicx.Track){
+			"Inst 2": func(t *logicx.Track) { t.Off = true },
+			"Inst 3": func(t *logicx.Track) { t.Hidden = true },
+			"Inst 5": func(t *logicx.Track) { t.Protected = true },
+		}
+		for name, edit := range edits {
+			t := track(p, name)
+			edit(t)
+			if err := t.Save(); err != nil {
+				return nil, err
+			}
+		}
+		return func(p logicx.ProjectData) error {
+			for name, edit := range edits {
+				var want logicx.Track
+				edit(&want)
+				got := track(&p, name)
+				if got.Off != want.Off || got.Hidden != want.Hidden || got.Protected != want.Protected {
+					return fmt.Errorf("%s: off %v hidden %v protected %v", name, got.Off, got.Hidden, got.Protected)
+				}
+			}
+			return nil
+		}, nil
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {

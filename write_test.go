@@ -836,6 +836,54 @@ func trackNamed(t *testing.T, p *ProjectData, name string) *Track {
 	return nil
 }
 
+// headerEdits are the track header buttons set in the tracks-flags fixture,
+// from tracks-flags-base, where Logic had armed Inst 1 as the selected track.
+var headerEdits = map[string]func(*Track){
+	"Inst 1": func(t *Track) { t.RecordArm = true },
+	"Inst 2": func(t *Track) { t.Off = true },
+	"Inst 3": func(t *Track) { t.Hidden = true },
+	"Inst 5": func(t *Track) { t.Protected = true },
+	"Inst 6": func(t *Track) { t.RecordArm, t.InputMonitoring = true, true },
+}
+
+func TestTrack_DecodesTheHeader(t *testing.T) {
+	p := parseFixtureProject(t, "tracks-flags.logicx")
+	for _, track := range p.Tracks {
+		if track.Kind != TrackKindInstrument {
+			continue
+		}
+		var want Track
+		if edit := headerEdits[track.Name]; edit != nil {
+			edit(&want)
+		}
+		got := [4]bool{track.RecordArm, track.Protected, track.Hidden, track.Off}
+		if got != [4]bool{want.RecordArm, want.Protected, want.Hidden, want.Off} {
+			t.Errorf("%s: arm, protected, hidden, off = %v", track.Name, got)
+		}
+	}
+}
+
+func TestTrack_SaveReproducesLogicsHeader(t *testing.T) {
+	p := parseFixtureProject(t, "tracks-flags-base.logicx")
+	logic := parseFixtureProject(t, "tracks-flags.logicx")
+	for name, edit := range headerEdits {
+		track := trackNamed(t, &p, name)
+		edit(track)
+		if name == "Inst 6" {
+			// Save leaves the arm, so Logic's arm is copied in to compare
+			// the rest.
+			track.trak.Data[arrangeTrackFlags] |= 0x01
+		}
+		if err := track.Save(); err != nil {
+			t.Fatal(err)
+		}
+		want := trackNamed(t, &logic, name).trak.Data
+		if got := track.trak.Data; !bytes.Equal(got[:4], want[:4]) {
+			t.Errorf("%s: arrange track starts % x, want Logic's % x", name, got[:4], want[:4])
+		}
+	}
+}
+
 func TestTrack_DecodesTheMixer(t *testing.T) {
 	logic := parseFixtureProject(t, "mixer.logicx")
 	base := parseFixtureProject(t, "mixer-base.logicx")

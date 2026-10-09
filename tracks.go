@@ -99,11 +99,21 @@ type Track struct {
 	// Automation is the track's automation points, in time order, as placed
 	// in Logic; see [AutomationPoint.Save].
 	Automation []AutomationPoint
+	// RecordArm, Protected, Hidden and Off are the track header's buttons,
+	// stored in the track's arrange track; they are false when it has none.
+	// RecordArm is read only: on opening a project Logic arms the selected
+	// track instead, even in a project it saved armed.
+	RecordArm  bool
+	Protected  bool
+	Hidden     bool
+	Off        bool
 	Instrument *AudioUnit
 	MIDIFX     []AudioUnit
 	AudioFX    []AudioUnit
 	strip      uint16
 	chunk      *Chunk
+	// trak is the arrange track, which holds the header's buttons.
+	trak *Chunk
 	// environment is the strip's environment object, which holds its color.
 	environment *Chunk
 	// mixer reports whether the strip is long enough to hold the mixer
@@ -130,6 +140,45 @@ const (
 	channelStripVolume   = 116
 	channelStripMixerEnd = channelStripVolume + 4
 )
+
+// An arrange track is a "Trak" chunk in group 23, sequence 4, that names its
+// strip's environment object.
+const (
+	arrangeTrackGroup       = 23
+	arrangeTrackSequence    = 4
+	arrangeTrackFlags       = 2 // 0x01 record arm, 0x20 protected
+	arrangeTrackState       = 3 // 0x04 hidden, 0x20 off
+	arrangeTrackEnvironment = 8
+	arrangeTrackMinimum     = arrangeTrackEnvironment + 4
+)
+
+// headerFields is the layout of the track header's buttons in its arrange
+// track that Save writes; RecordArm is decoded besides.
+func (t *Track) headerFields() []record.Field {
+	return []record.Field{
+		record.Bit(arrangeTrackFlags, 0x20, &t.Protected),
+		record.Bit(arrangeTrackState, 0x04, &t.Hidden),
+		record.Bit(arrangeTrackState, 0x20, &t.Off),
+	}
+}
+
+// findArrangeTracks maps environment object sequence numbers to the arrange
+// track naming each. Logic can give a strip several, which is rare; the
+// first is kept.
+func findArrangeTracks(chunks []*Chunk) map[uint32]*Chunk {
+	traks := make(map[uint32]*Chunk)
+	for _, chunk := range chunks {
+		if chunk.Type != "Trak" || len(chunk.Data) < arrangeTrackMinimum ||
+			chunkSequenceID(chunk) != (chordSequenceID{arrangeTrackGroup, arrangeTrackSequence}) {
+			continue
+		}
+		object := binary.LittleEndian.Uint32(chunk.Data[arrangeTrackEnvironment:])
+		if _, ok := traks[object]; !ok {
+			traks[object] = chunk
+		}
+	}
+	return traks
+}
 
 // mixerFields is the layout of a strip's mixer settings; volume7 and pan
 // hold the stored forms of the volume's whole part and of Pan.
@@ -684,6 +733,7 @@ func findTracks(chunks []*Chunk) []Track {
 	routes := findRoutes(chunks)
 	sends := findSends(chunks, routes)
 	automation := findAutomation(chunks)
+	traks := findArrangeTracks(chunks)
 	var objects []*Chunk
 	byStrip := make(map[uint16][]*Chunk)
 	for _, chunk := range chunks {
@@ -738,6 +788,9 @@ func findTracks(chunks []*Chunk) []Track {
 		if track.environment != nil {
 			track.Color = track.environment.Data[environmentColor]
 			track.color = track.Color
+			if track.trak = traks[chunkSequenceID(track.environment).sequence]; track.trak != nil {
+				record.Decode(track.trak.Data, append(track.headerFields(), record.Bit(arrangeTrackFlags, 0x01, &track.RecordArm))...)
+			}
 		}
 		// Automation may belong to any of the strip's objects, such as the
 		// track's own object besides the strip's.
@@ -764,7 +817,9 @@ const (
 
 // Save writes t's mixer settings, and its name when it was changed, into the
 // channel strip it was decoded from, and its color into the strip's
-// environment object, and re-routes it when Output or Input was changed.
+// environment object and its header's buttons, but for RecordArm, into its
+// arrange track, and
+// re-routes it when Output or Input was changed.
 // Kind and Active are not written, nor are the sends; see [Send.Save]. ProjectData.Tracks is not updated; see
 // [ProjectData.Refresh].
 func (t *Track) Save() error {
@@ -811,6 +866,13 @@ func (t *Track) Save() error {
 			return fmt.Errorf("logicx: track %q: color %d out of range", t.Name, t.Color)
 		}
 		t.environment.Data[environmentColor] = t.Color
+	}
+	if t.trak != nil {
+		trak, err := record.Encode(t.trak.Data, t.headerFields()...)
+		if err != nil {
+			return fmt.Errorf("logicx: track %q: %w", t.Name, err)
+		}
+		t.trak.Data = trak
 	}
 	t.chunk.Data, t.name, t.color = data, t.Name, t.Color
 	t.output, t.input = t.Output, t.Input
