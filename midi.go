@@ -140,7 +140,7 @@ func (s *MIDISequence) regionParams() regionParams {
 }
 
 // assignRegionTracks names the track each region is on.
-func assignRegionTracks(sequences []MIDISequence, tracks []Track) {
+func assignRegionTracks(sequences []MIDISequence, audio []AudioPlacement, tracks []Track) {
 	names := make(map[uint32]string, len(tracks))
 	for _, t := range tracks {
 		if t.environment != nil {
@@ -149,6 +149,9 @@ func assignRegionTracks(sequences []MIDISequence, tracks []Track) {
 	}
 	for i := range sequences {
 		sequences[i].Track = names[sequences[i].trackObject]
+	}
+	for i := range audio {
+		audio[i].Track = names[audio[i].trackObject]
 	}
 }
 

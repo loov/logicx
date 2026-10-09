@@ -367,6 +367,22 @@ var edits = []edit{
 				r.Delay == want.Delay && r.Quantize == want.Quantize && r.Color == want.Color, "region %+v", r)
 		}, r.Save()
 	}},
+	{"audio-region", "regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		if len(p.AudioPlacements) == 0 {
+			return nil, errors.New("no audio region placed")
+		}
+		a := &p.AudioPlacements[0]
+		a.Position, a.Fraction, a.Gain, a.FadeIn, a.FadeOut = 46080, 0, -2, 50, 60
+		want := *a
+		return func(p logicx.ProjectData) error {
+			for _, a := range p.AudioPlacements {
+				if a.Track == want.Track {
+					return expect(a.Position == want.Position && a.Gain == want.Gain && a.FadeIn == want.FadeIn && a.FadeOut == want.FadeOut, "placement %+v", a)
+				}
+			}
+			return errors.New("the audio region is gone")
+		}, a.Save()
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {

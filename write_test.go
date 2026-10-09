@@ -91,6 +91,9 @@ func saveAll(t *testing.T, p *ProjectData) {
 	for i := range p.AudioRegions {
 		add(p.AudioRegions[i].Save)
 	}
+	for i := range p.AudioPlacements {
+		add(p.AudioPlacements[i].Save)
+	}
 	for i := range p.Environment {
 		add(p.Environment[i].Save)
 	}
@@ -163,6 +166,9 @@ func everySave(p *ProjectData) []func() error {
 	}
 	for i := range p.AudioRegions {
 		saves = append(saves, p.AudioRegions[i].Save)
+	}
+	for i := range p.AudioPlacements {
+		saves = append(saves, p.AudioPlacements[i].Save)
 	}
 	for i := range p.Environment {
 		saves = append(saves, p.Environment[i].Save)
@@ -1211,6 +1217,34 @@ func TestMIDISequence_SaveReproducesLogicsParameters(t *testing.T) {
 	}
 	if !regionOn(t, ptr(reparse(t, &p)), "Inst 1").Mute {
 		t.Error("the mute did not survive a reparse")
+	}
+}
+
+func TestAudioPlacement_DecodesAndSaves(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	trimmed := p.AudioRegions[0]
+	if trimmed.Offset != 22092 || trimmed.Frames != 88121 {
+		t.Errorf("trimmed region = offset %d, %d frames", trimmed.Offset, trimmed.Frames)
+	}
+	if len(p.AudioPlacements) != 2 {
+		t.Fatalf("%d placements, want 2", len(p.AudioPlacements))
+	}
+	// Audio 1 has the trimmed region at bar 2, +3 dB with fades of 100 and
+	// 200; Audio 2 the whole file at bar 4, at the loop's own -7 dB.
+	a := &p.AudioPlacements[0]
+	if a.Region != 0 || a.Track != "Audio 1" || a.Position/3840 != 11 || a.Gain != 3 || a.FadeIn != 100 || a.FadeOut != 200 {
+		t.Errorf("Audio 1 placement = %+v", *a)
+	}
+	if b := p.AudioPlacements[1]; b.Region != 1 || b.Track != "Audio 2" || b.Position != 49920 || b.Gain != -7 {
+		t.Errorf("Audio 2 placement = %+v", b)
+	}
+	a.Position, a.Fraction, a.Gain, a.FadeIn, a.FadeOut = 46080, 0, -2, 50, 60
+	if err := a.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := reparse(t, &p).AudioPlacements[0]
+	if got.Position != 46080 || got.Gain != -2 || got.FadeIn != 50 || got.FadeOut != 60 {
+		t.Errorf("saved placement = %+v", got)
 	}
 }
 

@@ -24,7 +24,9 @@ type ProjectData struct {
 	ProjectChords  []Chord
 	AudioFiles     []AudioFile
 	AudioRegions   []AudioRegion
-	Environment    []EnvironmentObject
+	// AudioPlacements are the audio regions placed on tracks.
+	AudioPlacements []AudioPlacement
+	Environment     []EnvironmentObject
 	// Transport is nil when the project has no song chunk this package reads.
 	Transport *Transport
 }
@@ -87,7 +89,8 @@ func (p *ProjectData) Refresh() {
 		Environment: findEnvironment(chunks), Transport: findTransport(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
-	assignRegionTracks(p.Sequences, p.Tracks)
+	p.AudioPlacements = findAudioPlacements(chunks, p.AudioRegions)
+	assignRegionTracks(p.Sequences, p.AudioPlacements, p.Tracks)
 }
 
 // parseChunks splits ProjectData into its chunk records. Every chunk is

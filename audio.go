@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/loov/logicx/internal/record"
 	"howett.net/plist"
@@ -121,13 +122,17 @@ func (f *AudioFile) Save() error {
 // Apple Loops family archives elsewhere in the project carry the region's
 // name too; a renamed region needs [ProjectData.RenameLoops] as well.
 type AudioRegion struct {
-	Name   string
+	Name string
+	// Offset is where the region starts in its audio file, and Frames how
+	// long it is, in sample frames.
+	Offset uint32
 	Frames uint32
 	chunk  *Chunk
 }
 
 const (
 	audioRegionChunk      = "AuRg"
+	audioRegionOffset     = 6
 	audioRegionFrames     = 22
 	audioRegionNameLength = 74
 	// audioRegionTail is everything after the name: padding, the region's
@@ -138,6 +143,7 @@ const (
 // fields is the layout of an audio region chunk.
 func (r *AudioRegion) fields() []record.Field {
 	return []record.Field{
+		record.Uint32LE(audioRegionOffset, &r.Offset),
 		record.Uint32LE(audioRegionFrames, &r.Frames),
 		record.String16(audioRegionNameLength, &r.Name, record.Len(audioRegionTail)),
 	}
@@ -169,6 +175,89 @@ func (r *AudioRegion) Save() error {
 	}
 	r.chunk.Data = data
 	return nil
+}
+
+// AudioPlacement is an audio region placed on a track: an event in the
+// arrange sequence naming the region by its index.
+type AudioPlacement struct {
+	// Region is the placed region's index in ProjectData.AudioRegions.
+	Region int
+	// Position and Fraction are on the same timeline as [MIDINote.Position].
+	Position uint32
+	Fraction uint16
+	// Track is the name of the track the region is on, or empty when it is
+	// not known. Save does not move a region between tracks.
+	Track string
+	// Gain is the region's gain in dB, and FadeIn and FadeOut its fades as
+	// Logic's region inspector shows them.
+	Gain        int8
+	FadeIn      uint32
+	FadeOut     uint32
+	ref         eventRef
+	trackObject uint32
+}
+
+const (
+	eventAudioRegion      = 0x24
+	audioPlacementRegion  = 13
+	audioPlacementGain    = 52
+	audioPlacementFadeOut = 72
+	audioPlacementFadeIn  = 76
+	audioPlacementMinimum = 80
+)
+
+// fields is the layout of an audio placement; position is the stored form of
+// Position and gain of Gain.
+func (a *AudioPlacement) fields(position *uint32, gain *uint8) []record.Field {
+	return []record.Field{
+		record.Equal(0, eventAudioRegion),
+		record.Uint16LE(2, &a.Fraction),
+		record.Uint32LE(4, position),
+		record.Uint8(audioPlacementGain, gain),
+		record.Equal(55, 0x8a),
+		record.Equal(71, 0x89),
+		record.Uint32LE(audioPlacementFadeOut, &a.FadeOut),
+		record.Uint32LE(audioPlacementFadeIn, &a.FadeIn),
+	}
+}
+
+// findAudioPlacements decodes the placements of regions, in file order. A
+// placement naming no region is left out.
+func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacement {
+	byIndex := make(map[uint16]int, len(regions))
+	for i, r := range regions {
+		byIndex[binary.LittleEndian.Uint16(r.chunk.Header[14:])] = i
+	}
+	var placements []AudioPlacement
+	sequenceEvents(chunks, func(chunk *Chunk, event *Event) {
+		d := event.Data
+		if event.Type != eventAudioRegion || len(d) < audioPlacementMinimum {
+			return
+		}
+		region, ok := byIndex[binary.LittleEndian.Uint16(d[audioPlacementRegion:])]
+		var a AudioPlacement
+		var position uint32
+		var gain uint8
+		if !ok || !record.Decode(d, a.fields(&position, &gain)...) || position > math.MaxUint32-projectChordPositionBias {
+			return
+		}
+		a.Region, a.Position, a.Gain = region, position+projectChordPositionBias, int8(gain)
+		a.trackObject = binary.LittleEndian.Uint32(d[linkTrack:])
+		a.ref = eventRef{chunk, event}
+		placements = append(placements, a)
+	})
+	return placements
+}
+
+// Save writes a's position, gain and fades into its event, keeping the
+// sequence in time order. ProjectData.AudioPlacements is not updated; see
+// [ProjectData.Refresh].
+func (a *AudioPlacement) Save() error {
+	if a.Position < projectChordPositionBias {
+		return fmt.Errorf("logicx: audio region position %d precedes the project start", a.Position)
+	}
+	position, gain := a.Position-projectChordPositionBias, uint8(a.Gain)
+	return a.ref.save("audio region placement", a.fields(&position, &gain)...)
 }
 
 // RenameLoops replaces the loop name old with name in the Apple Loops family
