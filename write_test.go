@@ -1147,6 +1147,73 @@ func TestAutomationPoint_SavePluginAutomation(t *testing.T) {
 	}
 }
 
+// regionOn returns p's region on the named track.
+func regionOn(t *testing.T, p *ProjectData, track string) *MIDISequence {
+	t.Helper()
+	for i := range p.Sequences {
+		if p.Sequences[i].Track == track {
+			return &p.Sequences[i]
+		}
+	}
+	t.Fatalf("no region on %q", track)
+	return nil
+}
+
+func TestMIDISequence_DecodesRegionParameters(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	type params struct {
+		mute                bool
+		transpose, velocity int8
+		delay, quantize     int16
+		color               uint8
+	}
+	want := map[string]params{
+		"Inst 1": {color: 9},
+		"Inst 2": {mute: true, color: 9},
+		"Inst 3": {color: 9},
+		"Inst 4": {color: 9},
+		"Inst 5": {false, 5, 10, 20, -8, 20}, // 20 ticks is +1/192
+	}
+	for track, w := range want {
+		r := regionOn(t, &p, track)
+		if got := (params{r.Mute, r.Transpose, r.Velocity, r.Delay, r.Quantize, r.Color}); got != w {
+			t.Errorf("%s region = %+v, want %+v", track, got, w)
+		}
+	}
+}
+
+func TestMIDISequence_SaveReproducesLogicsParameters(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	r := regionOn(t, &p, "Inst 1")
+	r.Transpose, r.Velocity, r.Delay, r.Quantize, r.Color = 5, 10, 20, -8, 20
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	logic := regionOn(t, &p, "Inst 5")
+	tail, _ := sequenceTail(r.descriptor.Data)
+	got, want := r.descriptor.Data[tail:], logic.descriptor.Data[tail:]
+	for _, at := range []int{sequenceColor, sequenceQuantizeCopy, sequenceQuantizeCopy + 1, sequenceMute, sequenceDelay,
+		sequenceDelay + 1, sequenceQuantize, sequenceQuantize + 1, sequenceVelocity, sequenceTranspose} {
+		if got[at] != want[at] {
+			t.Errorf("descriptor tail byte %d = %#x, want Logic's %#x", at, got[at], want[at])
+		}
+	}
+	if g, w := r.link.event.Data[linkVelocity:linkTranspose+1], logic.link.event.Data[linkVelocity:linkTranspose+1]; !bytes.Equal(g, w) {
+		t.Errorf("link velocity and transpose = % x, want Logic's % x", g, w)
+	}
+	r.Mute = true
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	muted := regionOn(t, &p, "Inst 2")
+	if r.link.event.Data[linkMute] != muted.link.event.Data[linkMute] || r.descriptor.Data[tail+sequenceMute] != muted.descriptor.Data[tail+sequenceMute] {
+		t.Error("the mute does not match Logic's")
+	}
+	if !regionOn(t, ptr(reparse(t, &p)), "Inst 1").Mute {
+		t.Error("the mute did not survive a reparse")
+	}
+}
+
 func TestAutomationPoint_SaveDeleteDuplicate(t *testing.T) {
 	p := parseFixtureProject(t, "mixer-automation.logicx")
 	volume, pan, mute := trackNamed(t, &p, "Inst 1"), trackNamed(t, &p, "Inst 3"), trackNamed(t, &p, "Inst 4")

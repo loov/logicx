@@ -354,6 +354,19 @@ var edits = []edit{
 			return expect(len(rate) == 4 && rate[2].MIDIFX && rate[2].Slot == 2 && rate[2].Value == 8<<24, "rate %+v", rate)
 		}, rate[2].Save()
 	}},
+	{"region-parameters", "regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		r := region(p, "Inst 1")
+		if r == nil {
+			return nil, errors.New("no region on Inst 1")
+		}
+		r.Mute, r.Transpose, r.Velocity, r.Delay, r.Quantize, r.Color = true, -3, -7, 10, -8, 30
+		want := *r
+		return func(p logicx.ProjectData) error {
+			r := region(&p, "Inst 1")
+			return expect(r != nil && r.Mute && r.Transpose == want.Transpose && r.Velocity == want.Velocity &&
+				r.Delay == want.Delay && r.Quantize == want.Quantize && r.Color == want.Color, "region %+v", r)
+		}, r.Save()
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {
@@ -364,6 +377,16 @@ var edits = []edit{
 			return expect(p.Transport != nil && p.Transport.SampleRate == 96000, "transport %+v", p.Transport)
 		}, t.Save()
 	}},
+}
+
+// region returns p's region on the named track, or nil when there is none.
+func region(p *logicx.ProjectData, track string) *logicx.MIDISequence {
+	for i := range p.Sequences {
+		if p.Sequences[i].Track == track {
+			return &p.Sequences[i]
+		}
+	}
+	return nil
 }
 
 // track returns p's track named name, or an empty one when there is none.

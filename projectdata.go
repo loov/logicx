@@ -87,6 +87,7 @@ func (p *ProjectData) Refresh() {
 		Environment: findEnvironment(chunks), Transport: findTransport(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
+	assignRegionTracks(p.Sequences, p.Tracks)
 }
 
 // parseChunks splits ProjectData into its chunk records. Every chunk is

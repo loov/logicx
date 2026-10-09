@@ -33,9 +33,23 @@ type MIDISequence struct {
 	Duration       uint32
 	SourceDuration uint32
 	Looped         bool
-	Notes          []MIDINote
-	Chords         []Chord
-	descriptor     *Chunk
+	// Mute, Transpose, Velocity, Delay (in ticks), Quantize and Color are
+	// the region's parameters, kept with its source. Quantize is Logic's
+	// code: 0 is off and -8 a 1/8 note; the others are not decoded. Color is
+	// a palette code, as [Track.Color]. They are zero, and Save keeps them,
+	// for a source in the older layout.
+	Mute      bool
+	Transpose int8
+	Velocity  int8
+	Delay     int16
+	Quantize  int16
+	Color     uint8
+	// Track is the name of the track the region is on, or empty when it is
+	// not known. Save does not move a region between tracks.
+	Track      string
+	Notes      []MIDINote
+	Chords     []Chord
+	descriptor *Chunk
 	// name is Name as decoded, so that Save writes it only when changed.
 	name string
 	// link is the arrangement locator placing the region, linkDuration its
@@ -45,6 +59,97 @@ type MIDISequence struct {
 	linkDuration uint32
 	position     uint32
 	shared       bool
+	// parameters reports whether the source holds the region parameters,
+	// and params is them as decoded.
+	parameters  bool
+	params      regionParams
+	trackObject uint32
+}
+
+// regionParams is the stored form of a region's parameters.
+type regionParams struct {
+	mute                       bool
+	transpose, velocity, color uint8
+	delay, quantize            uint16
+}
+
+// A region's parameters sit in its source's descriptor, from the end of its
+// name, in a tail of sequenceParameterTail bytes; the link placing it repeats
+// the mute, velocity and transpose and names the track's environment object.
+const (
+	sequenceParameterTail = 279
+	sequenceColor         = 9
+	sequenceQuantizeCopy  = 72
+	sequenceMute          = 78 // 0x01
+	sequenceDelay         = 98
+	sequenceQuantize      = 120
+	sequenceVelocity      = 160
+	sequenceTranspose     = 161
+	linkMute              = 12 // 0x01
+	linkTrack             = 16
+	linkVelocity          = 52
+	linkTranspose         = 53
+)
+
+// descriptorFields is the layout of the region parameters in a source
+// descriptor whose name ends at tail.
+func (p *regionParams) descriptorFields(tail int) []record.Field {
+	return []record.Field{
+		record.Uint8(tail+sequenceColor, &p.color),
+		record.Uint16LE(tail+sequenceQuantizeCopy, &p.quantize),
+		record.Bit(tail+sequenceMute, 0x01, &p.mute),
+		record.Uint16LE(tail+sequenceDelay, &p.delay),
+		record.Uint16LE(tail+sequenceQuantize, &p.quantize),
+		record.Uint8(tail+sequenceVelocity, &p.velocity),
+		record.Uint8(tail+sequenceTranspose, &p.transpose),
+	}
+}
+
+// linkFields is the layout of the parameters a region's link repeats.
+func (p *regionParams) linkFields() []record.Field {
+	return []record.Field{
+		record.Bit(linkMute, 0x01, &p.mute),
+		record.Uint8(linkVelocity, &p.velocity),
+		record.Uint8(linkTranspose, &p.transpose),
+	}
+}
+
+// decodeRegion decodes s's parameters and the track its link names.
+func (s *MIDISequence) decodeRegion() {
+	if s.link.event != nil {
+		s.trackObject = binary.LittleEndian.Uint32(s.link.event.Data[linkTrack:])
+	}
+	data := s.descriptor.Data
+	tail, ok := sequenceTail(data)
+	if !ok || len(data)-tail != sequenceParameterTail {
+		return
+	}
+	s.parameters = true
+	record.Decode(data, s.params.descriptorFields(tail)...)
+	p := s.params
+	s.Mute, s.Transpose, s.Velocity = p.mute, int8(p.transpose), int8(p.velocity)
+	s.Delay, s.Quantize, s.Color = int16(p.delay), int16(p.quantize), p.color
+}
+
+// regionParams returns s's parameters in their stored form.
+func (s *MIDISequence) regionParams() regionParams {
+	return regionParams{
+		mute: s.Mute, transpose: uint8(s.Transpose), velocity: uint8(s.Velocity), color: s.Color,
+		delay: uint16(s.Delay), quantize: uint16(s.Quantize),
+	}
+}
+
+// assignRegionTracks names the track each region is on.
+func assignRegionTracks(sequences []MIDISequence, tracks []Track) {
+	names := make(map[uint32]string, len(tracks))
+	for _, t := range tracks {
+		if t.environment != nil {
+			names[chunkSequenceID(t.environment).sequence] = t.Name
+		}
+	}
+	for i := range sequences {
+		sequences[i].Track = names[sequences[i].trackObject]
+	}
 }
 
 // MIDINote contains the stable fields of Logic's 32-byte note record.
@@ -328,6 +433,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 	}
 	for i := range sequences {
 		sequences[i].shared = placements[sequences[i].SequenceID] > 1
+		sequences[i].decodeRegion()
 	}
 	if len(sequences) != 0 {
 		slices.SortFunc(sequences, func(a, b MIDISequence) int {
@@ -344,6 +450,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 			Duration: s.duration, SourceDuration: s.duration, Notes: s.notes, Chords: s.chords,
 			descriptor: s.descriptor, name: s.name,
 		})
+		sequences[len(sequences)-1].decodeRegion()
 	}
 	return sequences
 }
@@ -1439,6 +1546,9 @@ func (s *MIDISequence) Save() error {
 		if s.Position != s.position && s.shared {
 			return fmt.Errorf("logicx: region %q places a source other regions place too, so it cannot move alone", s.Name)
 		}
+		if s.regionParams() != s.params && s.shared {
+			return fmt.Errorf("logicx: region %q places a source other regions place too, so its parameters cannot change alone", s.Name)
+		}
 		link = regionLink{position: s.Position - projectChordPositionBias, duration: s.linkDuration, sequence: s.SequenceID}
 		switch {
 		case s.Looped && (s.Duration == 0 || s.Duration == noRegionLoop):
@@ -1458,6 +1568,14 @@ func (s *MIDISequence) Save() error {
 		}
 	}
 	fields := []record.Field{record.Uint32LE(len(data)-sequenceMetadataTail, &s.SourceDuration)}
+	params := s.regionParams()
+	if !s.parameters && params != s.params {
+		return fmt.Errorf("logicx: region %q has no parameters to change", s.Name)
+	}
+	if s.parameters {
+		tail, _ := sequenceTail(data)
+		fields = append(fields, params.descriptorFields(tail)...)
+	}
 	if s.link.event != nil && s.Position != s.position {
 		// The source's events stay put; the shift that places them follows
 		// the region.
@@ -1472,11 +1590,15 @@ func (s *MIDISequence) Save() error {
 	if err != nil {
 		return fmt.Errorf("logicx: region %q: %w", s.Name, err)
 	}
-	s.descriptor.Data, s.name = data, s.Name
+	s.descriptor.Data, s.name, s.params = data, s.Name, params
 	if s.link.event == nil {
 		return nil
 	}
-	if err := s.link.save("region", link.fields()...); err != nil {
+	linkFields := link.fields()
+	if s.parameters {
+		linkFields = append(linkFields, params.linkFields()...)
+	}
+	if err := s.link.save("region", linkFields...); err != nil {
 		return err
 	}
 	s.linkDuration, s.position = link.duration, s.Position
