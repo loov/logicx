@@ -1170,7 +1170,8 @@ func TestMIDISequence_DecodesRegionParameters(t *testing.T) {
 	type params struct {
 		mute                bool
 		transpose, velocity int8
-		delay, quantize     int16
+		delay               int16
+		quantize            Quantize
 		color               uint8
 	}
 	want := map[string]params{
@@ -1245,6 +1246,62 @@ func TestAudioPlacement_DecodesAndSaves(t *testing.T) {
 	got := reparse(t, &p).AudioPlacements[0]
 	if got.Position != 46080 || got.Gain != -2 || got.FadeIn != 50 || got.FadeOut != 60 {
 		t.Errorf("saved placement = %+v", got)
+	}
+}
+
+func TestMIDISequence_DecodesAnAlias(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	alias, original := regionOn(t, &p, "Inst 6"), regionOn(t, &p, "Inst 1")
+	if !alias.Alias || original.Alias || alias.Position != 53760 || len(alias.Notes) != len(original.Notes) {
+		t.Fatalf("alias = %v at %d with %d notes", alias.Alias, alias.Position, len(alias.Notes))
+	}
+	for i, n := range alias.Notes {
+		if n.Position != original.Notes[i].Position+15360 || n.Pitch != original.Notes[i].Pitch {
+			t.Errorf("alias note %d = %d at %d", i, n.Pitch, n.Position)
+		}
+	}
+}
+
+func TestMIDISequence_DecodesQuantize(t *testing.T) {
+	p := parseFixtureProject(t, "regions-more.logicx")
+	for track, want := range map[string]Quantize{
+		"Inst 1": QuantizeOff, "Inst 5": QuantizeEighth, "Inst 7": QuantizeQuarter, "Inst 8": QuantizeSixteen,
+		"Inst 9": QuantizeThirtyTwo, "Inst 10": Quantize12, "Inst 11": Quantize24, "Inst 12": Quantize16And24,
+	} {
+		if got := regionOn(t, &p, track).Quantize; got != want {
+			t.Errorf("%s quantize = %d, want %d", track, got, want)
+		}
+	}
+	for _, a := range p.AudioPlacements {
+		if a.Mute != (a.Track == "Audio 2") {
+			t.Errorf("%s mute = %v", a.Track, a.Mute)
+		}
+	}
+}
+
+func TestMIDISequence_MoveReproducesLogic(t *testing.T) {
+	// Logic moved Inst 1's region to Inst 7; moving it back gives the
+	// original's placement.
+	p := parseFixtureProject(t, "regions-move.logicx")
+	logic := regionOn(t, ptr(parseFixtureProject(t, "regions.logicx")), "Inst 1")
+	r := regionOn(t, &p, "Inst 7")
+	r.Track = "Inst 1"
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if g, w := r.link.event.Data[linkTrack:linkRow+2], logic.link.event.Data[linkTrack:linkRow+2]; !bytes.Equal(g, w) {
+		t.Errorf("link track and row = % x, want Logic's % x", g, w)
+	}
+	tail, _ := sequenceTail(r.descriptor.Data)
+	if g, w := r.descriptor.Data[tail+sequenceTrack:tail+sequenceTrack+4], logic.descriptor.Data[tail+sequenceTrack:tail+sequenceTrack+4]; !bytes.Equal(g, w) {
+		t.Errorf("source track = % x, want Logic's % x", g, w)
+	}
+	if regionOn(t, ptr(reparse(t, &p)), "Inst 1").Position != 38400 {
+		t.Error("the moved region is not on Inst 1 at bar 1")
+	}
+	r.Track = "Nowhere"
+	if r.Save() == nil {
+		t.Error("Save() moved a region to a track that does not exist")
 	}
 }
 

@@ -383,6 +383,35 @@ var edits = []edit{
 			return errors.New("the audio region is gone")
 		}, a.Save()
 	}},
+	{"region-move", "regions-more", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		r := region(p, "Inst 4")
+		if r == nil || len(p.AudioPlacements) < 2 {
+			return nil, errors.New("no regions to move")
+		}
+		r.Track, r.Quantize = "Inst 6", logicx.QuantizeSixteen
+		if err := r.Save(); err != nil {
+			return nil, err
+		}
+		audio := &p.AudioPlacements[1]
+		audio.Track, audio.Mute = "Audio 1", false
+		return func(p logicx.ProjectData) error {
+			var moved *logicx.MIDISequence
+			for i := range p.Sequences {
+				if p.Sequences[i].Track == "Inst 6" && !p.Sequences[i].Alias {
+					moved = &p.Sequences[i]
+				}
+			}
+			if moved == nil || moved.Quantize != logicx.QuantizeSixteen || moved.Position != 40320 {
+				return fmt.Errorf("Inst 4's region did not arrive on Inst 6: %+v", moved)
+			}
+			for _, a := range p.AudioPlacements {
+				if a.Position == 49920 {
+					return expect(a.Track == "Audio 1" && !a.Mute, "audio %+v", a)
+				}
+			}
+			return errors.New("the audio region at bar 4 is gone")
+		}, audio.Save()
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {

@@ -11,6 +11,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/loov/logicx/internal/record"
@@ -33,19 +34,22 @@ type MIDISequence struct {
 	Duration       uint32
 	SourceDuration uint32
 	Looped         bool
+	// Alias reports whether the region is an alias, which plays the events of
+	// another region's source: editing its notes edits that source's.
+	Alias bool
 	// Mute, Transpose, Velocity, Delay (in ticks), Quantize and Color are
-	// the region's parameters, kept with its source. Quantize is Logic's
-	// code: 0 is off and -8 a 1/8 note; the others are not decoded. Color is
+	// the region's parameters, kept with its source. Color is
 	// a palette code, as [Track.Color]. They are zero, and Save keeps them,
 	// for a source in the older layout.
 	Mute      bool
 	Transpose int8
 	Velocity  int8
 	Delay     int16
-	Quantize  int16
+	Quantize  Quantize
 	Color     uint8
 	// Track is the name of the track the region is on, or empty when it is
-	// not known. Save does not move a region between tracks.
+	// not known. Save moves the region to another track that has an arrange
+	// track, unless other regions place its source too.
 	Track      string
 	Notes      []MIDINote
 	Chords     []Chord
@@ -64,7 +68,39 @@ type MIDISequence struct {
 	parameters  bool
 	params      regionParams
 	trackObject uint32
+	// track is Track as decoded, and arrange the arrange tracks by name.
+	track   string
+	arrange map[string]arrangeTarget
 }
+
+// Quantize is a region's quantize setting, by Logic's code for it.
+type Quantize int16
+
+const (
+	QuantizeOff       Quantize = 0
+	QuantizeQuarter   Quantize = -10
+	QuantizeEighth    Quantize = -8
+	Quantize12        Quantize = -7 // 1/12, eighth-note triplets
+	QuantizeSixteen   Quantize = -6
+	Quantize24        Quantize = -5 // 1/24, sixteenth-note triplets
+	QuantizeThirtyTwo Quantize = -4
+	Quantize16And24   Quantize = -15
+)
+
+// arrangeTarget is where a region on a track is placed: the arrange track's
+// environment object and its row.
+type arrangeTarget struct {
+	object uint32
+	row    uint16
+}
+
+// A region's link and its source name the track's environment object; the
+// link adds the row.
+const (
+	linkRow           = 20
+	sequenceTrack     = 204
+	arrangeTrackIndex = 18 // in the arrange track's chunk header, from 0
+)
 
 // regionParams is the stored form of a region's parameters.
 type regionParams struct {
@@ -128,7 +164,7 @@ func (s *MIDISequence) decodeRegion() {
 	record.Decode(data, s.params.descriptorFields(tail)...)
 	p := s.params
 	s.Mute, s.Transpose, s.Velocity = p.mute, int8(p.transpose), int8(p.velocity)
-	s.Delay, s.Quantize, s.Color = int16(p.delay), int16(p.quantize), p.color
+	s.Delay, s.Quantize, s.Color = int16(p.delay), Quantize(p.quantize), p.color
 }
 
 // regionParams returns s's parameters in their stored form.
@@ -139,20 +175,45 @@ func (s *MIDISequence) regionParams() regionParams {
 	}
 }
 
-// assignRegionTracks names the track each region is on.
+// assignRegionTracks names the track each region is on, and gives the
+// regions the arrange tracks they can move to.
 func assignRegionTracks(sequences []MIDISequence, audio []AudioPlacement, tracks []Track) {
 	names := make(map[uint32]string, len(tracks))
+	arrange := make(map[string]arrangeTarget)
 	for _, t := range tracks {
 		if t.environment != nil {
 			names[chunkSequenceID(t.environment).sequence] = t.Name
 		}
+		if t.trak != nil {
+			arrange[t.Name] = arrangeTarget{
+				object: binary.LittleEndian.Uint32(t.trak.Data[arrangeTrackEnvironment:]),
+				row:    uint16(binary.LittleEndian.Uint32(t.trak.Header[arrangeTrackIndex:]) + 1),
+			}
+		}
 	}
 	for i := range sequences {
-		sequences[i].Track = names[sequences[i].trackObject]
+		s := &sequences[i]
+		s.Track = names[s.trackObject]
+		s.track, s.arrange = s.Track, arrange
 	}
 	for i := range audio {
-		audio[i].Track = names[audio[i].trackObject]
+		a := &audio[i]
+		a.Track = names[a.trackObject]
+		a.track, a.arrange = a.Track, arrange
 	}
+}
+
+// moveFields is the layout of a link moved to the named track's arrange track,
+// or nil when the track did not change.
+func moveFields(what, from, to string, arrange map[string]arrangeTarget) ([]record.Field, *arrangeTarget, error) {
+	if to == from {
+		return nil, nil, nil
+	}
+	target, ok := arrange[to]
+	if !ok {
+		return nil, nil, fmt.Errorf("logicx: %s cannot move to %q, which has no arrange track", what, to)
+	}
+	return []record.Field{record.Uint32LE(linkTrack, &target.object), record.Uint16LE(linkRow, &target.row)}, &target, nil
 }
 
 // MIDINote contains the stable fields of Logic's 32-byte note record.
@@ -420,11 +481,22 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 			continue
 		}
 		for _, link := range decodeRegionLinks(event) {
-			s, ok := sources[chordSequenceID{group: id.group, sequence: link.sequence}]
+			own := chordSequenceID{group: id.group, sequence: link.sequence}
+			s, ok := sources[own]
+			alias := false
+			if target, isAlias := sources[chordSequenceID{group: id.group, sequence: link.alias}]; !ok && isAlias && descriptors[own] != nil {
+				// An alias plays its target's events, placed by its own
+				// descriptor.
+				d := descriptors[own]
+				s, ok, alias = target, true, true
+				s.id, s.descriptor, s.name = own, d, sequenceName(d.Data)
+				s.duration, s.positionOffset = sequenceDuration(d.Data), sequencePositionOffset(d.Data)
+			}
 			if !ok {
 				continue
 			}
 			sequence, valid := materializeRegion(s, link)
+			sequence.Alias = alias
 			if valid {
 				sequences = append(sequences, sequence)
 			}
@@ -494,7 +566,9 @@ type regionLink struct {
 	position uint32
 	duration uint32
 	sequence uint32
-	ref      eventRef
+	// alias is the source an alias plays, whose own source holds no events.
+	alias uint32
+	ref   eventRef
 }
 
 // decodeRegionLinks decodes the arrangement locators of one sequence.
@@ -523,6 +597,7 @@ func (l *regionLink) fields() []record.Field {
 	return []record.Field{
 		record.Equal(0, 0x20, 0),
 		record.Uint32LE(4, &l.position),
+		record.Uint32LE(8, &l.alias),
 		record.Uint32LE(28, &l.duration),
 		record.Uint32LE(32, &l.sequence),
 		record.Equal(36, 0, 0, 0, 0x88),
@@ -1552,7 +1627,11 @@ func (s *MIDISequence) Save() error {
 		if s.regionParams() != s.params && s.shared {
 			return fmt.Errorf("logicx: region %q places a source other regions place too, so its parameters cannot change alone", s.Name)
 		}
-		link = regionLink{position: s.Position - projectChordPositionBias, duration: s.linkDuration, sequence: s.SequenceID}
+		if s.Track != s.track && (s.shared || !s.parameters) {
+			return fmt.Errorf("logicx: region %q cannot move to another track", s.Name)
+		}
+		link = regionLink{position: s.Position - projectChordPositionBias, duration: s.linkDuration, sequence: s.SequenceID,
+			alias: binary.LittleEndian.Uint32(s.link.event.Data[8:])}
 		switch {
 		case s.Looped && (s.Duration == 0 || s.Duration == noRegionLoop):
 			return fmt.Errorf("logicx: loop length %d is not valid", s.Duration)
@@ -1575,9 +1654,16 @@ func (s *MIDISequence) Save() error {
 	if !s.parameters && params != s.params {
 		return fmt.Errorf("logicx: region %q has no parameters to change", s.Name)
 	}
+	move, target, err := moveFields("region "+strconv.Quote(s.Name), s.track, s.Track, s.arrange)
+	if err != nil {
+		return err
+	}
 	if s.parameters {
 		tail, _ := sequenceTail(data)
 		fields = append(fields, params.descriptorFields(tail)...)
+		if target != nil {
+			fields = append(fields, record.Uint32LE(tail+sequenceTrack, &target.object))
+		}
 	}
 	if s.link.event != nil && s.Position != s.position {
 		// The source's events stay put; the shift that places them follows
@@ -1589,7 +1675,7 @@ func (s *MIDISequence) Save() error {
 		stored := uint32(int32(shift))
 		fields = append(fields, record.Uint32LE(len(data)-sequenceOffsetTail, &stored))
 	}
-	data, err := record.Encode(data, fields...)
+	data, err = record.Encode(data, fields...)
 	if err != nil {
 		return fmt.Errorf("logicx: region %q: %w", s.Name, err)
 	}
@@ -1597,12 +1683,15 @@ func (s *MIDISequence) Save() error {
 	if s.link.event == nil {
 		return nil
 	}
-	linkFields := link.fields()
+	linkFields := append(link.fields(), move...)
 	if s.parameters {
 		linkFields = append(linkFields, params.linkFields()...)
 	}
 	if err := s.link.save("region", linkFields...); err != nil {
 		return err
+	}
+	if target != nil {
+		s.trackObject, s.track = target.object, s.Track
 	}
 	s.linkDuration, s.position = link.duration, s.Position
 	return nil

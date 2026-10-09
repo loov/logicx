@@ -186,8 +186,10 @@ type AudioPlacement struct {
 	Position uint32
 	Fraction uint16
 	// Track is the name of the track the region is on, or empty when it is
-	// not known. Save does not move a region between tracks.
+	// not known. Save moves the region to another track that has an arrange
+	// track.
 	Track string
+	Mute  bool
 	// Gain is the region's gain in dB, and FadeIn and FadeOut its fades as
 	// Logic's region inspector shows them.
 	Gain        int8
@@ -195,6 +197,8 @@ type AudioPlacement struct {
 	FadeOut     uint32
 	ref         eventRef
 	trackObject uint32
+	track       string
+	arrange     map[string]arrangeTarget
 }
 
 const (
@@ -213,6 +217,7 @@ func (a *AudioPlacement) fields(position *uint32, gain *uint8) []record.Field {
 		record.Equal(0, eventAudioRegion),
 		record.Uint16LE(2, &a.Fraction),
 		record.Uint32LE(4, position),
+		record.Bit(linkMute, 0x01, &a.Mute),
 		record.Uint8(audioPlacementGain, gain),
 		record.Equal(55, 0x8a),
 		record.Equal(71, 0x89),
@@ -249,7 +254,7 @@ func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacemen
 	return placements
 }
 
-// Save writes a's position, gain and fades into its event, keeping the
+// Save writes a's position, track, mute, gain and fades into its event, keeping the
 // sequence in time order. ProjectData.AudioPlacements is not updated; see
 // [ProjectData.Refresh].
 func (a *AudioPlacement) Save() error {
@@ -257,7 +262,17 @@ func (a *AudioPlacement) Save() error {
 		return fmt.Errorf("logicx: audio region position %d precedes the project start", a.Position)
 	}
 	position, gain := a.Position-projectChordPositionBias, uint8(a.Gain)
-	return a.ref.save("audio region placement", a.fields(&position, &gain)...)
+	move, target, err := moveFields("audio region", a.track, a.Track, a.arrange)
+	if err != nil {
+		return err
+	}
+	if err := a.ref.save("audio region placement", append(a.fields(&position, &gain), move...)...); err != nil {
+		return err
+	}
+	if target != nil {
+		a.trackObject, a.track = target.object, a.Track
+	}
+	return nil
 }
 
 // RenameLoops replaces the loop name old with name in the Apple Loops family
