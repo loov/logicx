@@ -1064,6 +1064,53 @@ func TestTrack_DecodesAutomation(t *testing.T) {
 	}
 }
 
+func TestTrack_DecodesPluginAutomation(t *testing.T) {
+	p := parseFixtureProject(t, "plugin-automation.logicx")
+	// Slot, parameter and the whole part of the value, as Logic shows it.
+	type point struct{ slot, parameter, value uint8 }
+	want := map[string][]point{
+		"Inst 1": {{2, 4, 101}, {2, 4, 101}, {2, 4, 89}},                                      // Gain in slot 1
+		"Inst 2": {{4, 4, 101}, {4, 4, 101}, {4, 4, 89}},                                      // Gain in slot 3
+		"Inst 3": {{2, 9, 30}, {2, 32, 63}, {2, 32, 63}, {2, 9, 52}, {2, 9, 17}, {2, 32, 35}}, // Channel EQ
+		"Inst 4": {{1, 1, 55}, {1, 1, 71}, {1, 1, 14}, {1, 1, 58}},                            // the instrument
+		"Inst 5": {{0, 28, 0}, {0, 28, 80}, {0, 28, 8}},                                       // Send 1's level
+	}
+	for name, w := range want {
+		var got []point
+		for _, a := range trackNamed(t, &p, name).Automation {
+			got = append(got, point{a.Slot, uint8(a.Parameter), uint8(a.Value >> 24)})
+		}
+		if !slices.Equal(got, w) {
+			t.Errorf("%s automation = %v, want %v", name, got, w)
+		}
+	}
+}
+
+func TestAutomationPoint_SavePluginAutomation(t *testing.T) {
+	p := parseFixtureProject(t, "plugin-automation.logicx")
+	gain := trackNamed(t, &p, "Inst 2").Automation[2]
+	gain.Value = 64 << 24
+	if err := gain.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := trackNamed(t, ptr(reparse(t, &p)), "Inst 2").Automation
+	if a := got[2]; a.Slot != 4 || a.Parameter != 4 || a.Value != 64<<24 {
+		t.Errorf("saved point = slot %d parameter %d value %#x", a.Slot, a.Parameter, a.Value)
+	}
+	// Only the edited lane lost its samples.
+	for _, chunk := range p.Chunks {
+		for _, e := range chunk.Events {
+			if e.Data[0] == eventAutomation+4 && e.Data[15]&automationSample != 0 {
+				t.Fatal("the gain lane kept its stale samples")
+			}
+		}
+	}
+	gain.Slot = maxAutomationSlot + 1
+	if gain.Save() == nil {
+		t.Error("Save() accepted slot 16")
+	}
+}
+
 func TestAutomationPoint_SaveDeleteDuplicate(t *testing.T) {
 	p := parseFixtureProject(t, "mixer-automation.logicx")
 	volume, pan, mute := trackNamed(t, &p, "Inst 1"), trackNamed(t, &p, "Inst 3"), trackNamed(t, &p, "Inst 4")

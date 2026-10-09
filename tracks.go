@@ -331,12 +331,17 @@ func (s *Send) Save() error {
 // AutomationPoint is one point of a track's automation.
 type AutomationPoint struct {
 	// Position and Fraction are on the same timeline as [MIDINote.Position].
-	Position  uint32
-	Fraction  uint16
+	Position uint32
+	Fraction uint16
+	// Slot is what the point automates: 0 is the channel strip, 1 its
+	// instrument and 1+n its audio effect in slot n (see [AudioUnit.Slot]).
+	Slot uint8
+	// Parameter is, on the channel strip, an [AutomationParameter], and
+	// otherwise the plug-in's parameter number.
 	Parameter AutomationParameter
 	// Value is 8.24 fixed point: the volume on the fader's scale (see
-	// [Track.Volume]), the pan from 0, fully left, to 127, and the mute as 0
-	// or 1.
+	// [Track.Volume]), the pan from 0, fully left, to 127, the mute as 0 or
+	// 1, and a plug-in parameter over its range scaled to 0 to 127.
 	Value uint32
 	// Curve bends the ramp from this point to the next, from -126 to 126 in
 	// steps of two; zero is straight. Over a fraction f of the way, the value
@@ -358,9 +363,9 @@ const (
 
 // fields is the layout of an automation point; parameter holds the stored
 // form of Parameter.
-func (a *AutomationPoint) fields(parameter *uint8) []record.Field {
+func (a *AutomationPoint) fields(eventType, parameter *uint8) []record.Field {
 	return []record.Field{
-		record.Equal(0, eventAutomation),
+		record.Uint8(0, eventType),
 		record.Uint16LE(2, &a.Fraction),
 		record.Uint32LE(4, &a.Position),
 		record.Uint32LE(8, &a.Value),
@@ -377,6 +382,9 @@ func (a *AutomationPoint) Save() error {
 	if a.Value > 127<<24 {
 		return fmt.Errorf("logicx: automation value %#x out of range", a.Value)
 	}
+	if a.Slot > maxAutomationSlot {
+		return fmt.Errorf("logicx: automation slot %d out of range", a.Slot)
+	}
 	if a.Curve&1 != 0 || a.Curve == math.MinInt8 {
 		return fmt.Errorf("logicx: automation curve %d is not an even number from -126 to 126", a.Curve)
 	}
@@ -384,11 +392,16 @@ func (a *AutomationPoint) Save() error {
 		return err
 	}
 	a.ref.event.Data = a.withCurve(a.ref.event.Data)
-	parameter := uint8(a.Parameter)
-	if err := a.ref.save("automation point", a.fields(&parameter)...); err != nil {
+	// Samples of the slot and parameter the point had are dropped too, as
+	// its ramps there are gone.
+	old := a.ref.event.Data
+	eventType, parameter := eventAutomation+a.Slot, uint8(a.Parameter)
+	oldType, oldParameter := old[0], old[12]
+	if err := a.ref.save("automation point", a.fields(&eventType, &parameter)...); err != nil {
 		return err
 	}
-	a.ref.dropSamples(parameter)
+	a.ref.dropSamples(eventType, parameter)
+	a.ref.dropSamples(oldType, oldParameter)
 	return nil
 }
 
@@ -398,7 +411,7 @@ func (a *AutomationPoint) Delete() error {
 	if err := a.ref.delete("automation point"); err != nil {
 		return err
 	}
-	a.ref.dropSamples(uint8(a.Parameter))
+	a.ref.dropSamples(eventAutomation+a.Slot, uint8(a.Parameter))
 	return nil
 }
 
@@ -436,10 +449,11 @@ func (a *AutomationPoint) withCurve(data []byte) []byte {
 	return data
 }
 
-// dropSamples removes the ramp samples of parameter from the sequence.
-func (r eventRef) dropSamples(parameter uint8) {
+// dropSamples removes the ramp samples of a slot's parameter, given by its
+// event type, from the sequence.
+func (r eventRef) dropSamples(eventType, parameter uint8) {
 	r.chunk.Events = slices.DeleteFunc(r.chunk.Events, func(e *Event) bool {
-		return e.Data[0] == eventAutomation && len(e.Data) >= atomSize && e.Data[12] == parameter && e.Data[15]&automationSample != 0
+		return e.Data[0] == eventType && len(e.Data) >= atomSize && e.Data[12] == parameter && e.Data[15]&automationSample != 0
 	})
 }
 
@@ -448,13 +462,17 @@ func (r eventRef) dropSamples(parameter uint8) {
 type AutomationParameter uint8
 
 const (
-	AutomationVolume AutomationParameter = 7
-	AutomationMute   AutomationParameter = 9
-	AutomationPan    AutomationParameter = 10
+	AutomationVolume     AutomationParameter = 7
+	AutomationMute       AutomationParameter = 9
+	AutomationPan        AutomationParameter = 10
+	AutomationSend1Level AutomationParameter = 28
 )
 
 const (
-	eventAutomation = 0x50
+	// eventAutomation is the event type of channel strip automation; each
+	// slot's automation takes the type that many after it.
+	eventAutomation   = 0x50
+	maxAutomationSlot = 0x0f
 	// automationSample marks the events Logic adds between two points to
 	// sample the ramp, or curve, joining them.
 	automationSample = 0x40
@@ -484,11 +502,12 @@ func findAutomation(chunks []*Chunk) map[uint32][]AutomationPoint {
 		}
 		for _, event := range chunk.Events {
 			d := event.Data
-			if d[0] != eventAutomation || d[15]&automationSample != 0 {
+			if d[0]&^maxAutomationSlot != eventAutomation || d[15]&automationSample != 0 {
 				continue
 			}
 			points[track] = append(points[track], AutomationPoint{
 				Position: binary.LittleEndian.Uint32(d[4:]), Fraction: binary.LittleEndian.Uint16(d[2:]),
+				Slot:      d[0] - eventAutomation,
 				Parameter: AutomationParameter(d[12]), Value: binary.LittleEndian.Uint32(d[8:]),
 				ref: eventRef{chunk, event},
 			})

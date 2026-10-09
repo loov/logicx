@@ -326,6 +326,23 @@ var edits = []edit{
 			return nil
 		}, nil
 	}},
+	{"plugin-automation", "plugin-automation", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		gain, synth := track(p, "Inst 2").Automation, track(p, "Inst 4").Automation
+		if len(gain) < 3 || len(synth) < 3 {
+			return nil, errors.New("no plug-in automation")
+		}
+		gain[2].Value, synth[2].Value = 64<<24, 100<<24
+		for _, a := range []*logicx.AutomationPoint{&gain[2], &synth[2]} {
+			if err := a.Save(); err != nil {
+				return nil, err
+			}
+		}
+		return func(p logicx.ProjectData) error {
+			gain, synth := track(&p, "Inst 2").Automation, track(&p, "Inst 4").Automation
+			return expect(len(gain) == 3 && gain[2].Slot == 4 && gain[2].Value == 64<<24 &&
+				len(synth) == 4 && synth[2].Slot == 1 && synth[2].Value == 100<<24, "gain %+v synth %+v", gain, synth)
+		}, nil
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {
