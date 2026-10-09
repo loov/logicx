@@ -85,8 +85,8 @@ type Track struct {
 	Mute            bool
 	Solo            bool
 	InputMonitoring bool
-	// Output is where the strip is routed: 0 is Stereo Out, n is Bus n and
-	// -2 is Surround. Save can route a strip between Stereo Out and the buses.
+	// Output is where the strip is routed: 0 is Stereo Out, n is Bus n, -1
+	// is no output and -2 is Surround. Save can route a strip between Stereo Out and the buses.
 	Output int16
 	// Input is an aux's input bus, or -1 for none. Save can move an aux from
 	// one bus to another.
@@ -334,8 +334,10 @@ type AutomationPoint struct {
 	Position uint32
 	Fraction uint16
 	// Slot is what the point automates: 0 is the channel strip, 1 its
-	// instrument and 1+n its audio effect in slot n (see [AudioUnit.Slot]).
-	Slot uint8
+	// instrument and 1+n its audio effect in slot n (see [AudioUnit.Slot]),
+	// or with MIDIFX, 1+n is its MIDI effect in slot n.
+	Slot   uint8
+	MIDIFX bool
 	// Parameter is, on the channel strip, an [AutomationParameter], and
 	// otherwise the plug-in's parameter number.
 	Parameter AutomationParameter
@@ -395,7 +397,7 @@ func (a *AutomationPoint) Save() error {
 	// Samples of the slot and parameter the point had are dropped too, as
 	// its ramps there are gone.
 	old := a.ref.event.Data
-	eventType, parameter := eventAutomation+a.Slot, uint8(a.Parameter)
+	eventType, parameter := a.eventType(), uint8(a.Parameter)
 	oldType, oldParameter := old[0], old[12]
 	if err := a.ref.save("automation point", a.fields(&eventType, &parameter)...); err != nil {
 		return err
@@ -411,7 +413,7 @@ func (a *AutomationPoint) Delete() error {
 	if err := a.ref.delete("automation point"); err != nil {
 		return err
 	}
-	a.ref.dropSamples(eventAutomation+a.Slot, uint8(a.Parameter))
+	a.ref.dropSamples(a.eventType(), uint8(a.Parameter))
 	return nil
 }
 
@@ -422,6 +424,14 @@ func (a *AutomationPoint) Duplicate() (AutomationPoint, error) {
 	copied := *a
 	copied.ref = ref
 	return copied, err
+}
+
+// eventType is the event type of a's slot.
+func (a *AutomationPoint) eventType() uint8 {
+	if a.MIDIFX {
+		return eventMIDIFXAutomation + a.Slot
+	}
+	return eventAutomation + a.Slot
 }
 
 // withCurve returns the point's record with its curve atom set from Curve
@@ -470,9 +480,11 @@ const (
 
 const (
 	// eventAutomation is the event type of channel strip automation; each
-	// slot's automation takes the type that many after it.
-	eventAutomation   = 0x50
-	maxAutomationSlot = 0x0f
+	// slot's automation takes the type that many after it, and MIDI
+	// effects' automation counts likewise from eventMIDIFXAutomation.
+	eventAutomation       = 0x50
+	eventMIDIFXAutomation = 0x40
+	maxAutomationSlot     = 0x0f
 	// automationSample marks the events Logic adds between two points to
 	// sample the ramp, or curve, joining them.
 	automationSample = 0x40
@@ -502,12 +514,13 @@ func findAutomation(chunks []*Chunk) map[uint32][]AutomationPoint {
 		}
 		for _, event := range chunk.Events {
 			d := event.Data
-			if d[0]&^maxAutomationSlot != eventAutomation || d[15]&automationSample != 0 {
+			base := d[0] &^ maxAutomationSlot
+			if base != eventAutomation && base != eventMIDIFXAutomation || d[15]&automationSample != 0 {
 				continue
 			}
 			points[track] = append(points[track], AutomationPoint{
 				Position: binary.LittleEndian.Uint32(d[4:]), Fraction: binary.LittleEndian.Uint16(d[2:]),
-				Slot:      d[0] - eventAutomation,
+				Slot: d[0] - base, MIDIFX: base == eventMIDIFXAutomation,
 				Parameter: AutomationParameter(d[12]), Value: binary.LittleEndian.Uint32(d[8:]),
 				ref: eventRef{chunk, event},
 			})

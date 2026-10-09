@@ -343,6 +343,17 @@ var edits = []edit{
 				len(synth) == 4 && synth[2].Slot == 1 && synth[2].Value == 100<<24, "gain %+v synth %+v", gain, synth)
 		}, nil
 	}},
+	{"midifx-automation", "routing-midifx", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		rate := track(p, "Inst 8").Automation
+		if len(rate) < 4 {
+			return nil, errors.New("no MIDI FX automation")
+		}
+		rate[2].Value = 8 << 24
+		return func(p logicx.ProjectData) error {
+			rate := track(&p, "Inst 8").Automation
+			return expect(len(rate) == 4 && rate[2].MIDIFX && rate[2].Slot == 2 && rate[2].Value == 8<<24, "rate %+v", rate)
+		}, rate[2].Save()
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {

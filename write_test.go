@@ -1086,6 +1086,42 @@ func TestTrack_DecodesPluginAutomation(t *testing.T) {
 	}
 }
 
+func TestTrack_DecodesMIDIFXAutomationAndNoOutput(t *testing.T) {
+	p := parseFixtureProject(t, "routing-midifx.logicx")
+	if out := trackNamed(t, &p, "Inst 1").Output; out != -1 {
+		t.Errorf("Inst 1 output = %d, want -1 for no output", out)
+	}
+	// The Arpeggiator's rate, as menu indexes: 12 is 1/16, 15 1/32, 17 1/32
+	// triplet and 3 1/2.
+	type point struct {
+		midifx          bool
+		slot, parameter uint8
+		value           uint8
+	}
+	want := map[string][]point{
+		"Inst 7": {{true, 1, 4, 12}, {true, 1, 4, 15}, {true, 1, 4, 3}, {true, 1, 4, 15}}, // MIDI FX slot 0
+		"Inst 8": {{true, 2, 4, 12}, {true, 2, 4, 17}, {true, 2, 4, 3}, {true, 2, 4, 15}}, // MIDI FX slot 1
+	}
+	for name, w := range want {
+		var got []point
+		for _, a := range trackNamed(t, &p, name).Automation {
+			got = append(got, point{a.MIDIFX, a.Slot, uint8(a.Parameter), uint8(a.Value >> 24)})
+		}
+		if !slices.Equal(got, w) {
+			t.Errorf("%s automation = %v, want %v", name, got, w)
+		}
+	}
+	rate := trackNamed(t, &p, "Inst 8").Automation[2]
+	rate.Value = 8 << 24
+	if err := rate.Save(); err != nil {
+		t.Fatal(err)
+	}
+	a := trackNamed(t, ptr(reparse(t, &p)), "Inst 8").Automation[2]
+	if !a.MIDIFX || a.Slot != 2 || a.Value != 8<<24 {
+		t.Errorf("saved point = %+v", a)
+	}
+}
+
 func TestAutomationPoint_SavePluginAutomation(t *testing.T) {
 	p := parseFixtureProject(t, "plugin-automation.logicx")
 	gain := trackNamed(t, &p, "Inst 2").Automation[2]
