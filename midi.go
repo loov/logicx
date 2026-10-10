@@ -495,7 +495,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 		}
 		s := sequenceSource{
 			id: id, descriptor: descriptor, name: sequenceName(descriptor.Data), chunkOffset: chunk.Offset,
-			duration: sequenceDuration(descriptor.Data), positionOffset: sequencePositionOffset(descriptor.Data),
+			duration: sequenceDuration(descriptor.Data), positionOffset: sequenceShift(descriptor.Data),
 			notes: notes, chords: chords,
 		}
 		sources[id] = s
@@ -524,7 +524,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 				d := descriptors[own]
 				s, ok, alias = target, true, true
 				s.id, s.descriptor, s.name = own, d, sequenceName(d.Data)
-				s.duration, s.positionOffset = sequenceDuration(d.Data), sequencePositionOffset(d.Data)
+				s.duration, s.positionOffset = sequenceDuration(d.Data), sequenceShift(d.Data)
 			}
 			if !ok {
 				continue
@@ -593,6 +593,21 @@ func sequencePositionOffset(data []byte) int32 {
 		return 0
 	}
 	return int32(binary.LittleEndian.Uint32(data[len(data)-sequenceOffsetTail:]))
+}
+
+// sequenceCrop is where, after an MSeq payload's name, a region cropped from
+// the left holds how far into its source it starts, in ticks.
+const sequenceCrop = 4
+
+// sequenceShift returns the shift that places a source's events on the
+// arrangement: the stored position shift less how far the region's start was
+// cropped into its source.
+func sequenceShift(data []byte) int32 {
+	shift := sequencePositionOffset(data)
+	if tail, ok := sequenceTail(data); ok && tail+sequenceCrop+4 <= len(data)-sequenceOffsetTail {
+		shift -= int32(binary.LittleEndian.Uint32(data[tail+sequenceCrop:]))
+	}
+	return shift
 }
 
 // regionLink places a source sequence on the arrangement timeline.

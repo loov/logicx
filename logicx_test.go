@@ -928,3 +928,28 @@ func TestProjectData_DecodesTrackNames(t *testing.T) {
 		}
 	}
 }
+
+// TestMIDISequence_CroppedRegionStartsInsideItsSource covers a region whose
+// left edge was dragged right: it plays its source from that far in, so the
+// notes before the crop are hidden and the rest move earlier by the crop.
+func TestMIDISequence_CroppedRegionStartsInsideItsSource(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	before := p.Sequences[0]
+	if len(before.Notes) < 2 {
+		t.Fatalf("fixture region has %d notes", len(before.Notes))
+	}
+	crop := before.Notes[1].Position - before.Position
+	data := before.descriptor.Data
+	tail, _ := sequenceTail(data)
+	binary.LittleEndian.PutUint32(data[tail+sequenceCrop:], crop)
+
+	var after MIDISequence
+	for _, s := range findMIDISequences(p.Chunks) {
+		if s.SequenceID == before.SequenceID && s.Position == before.Position {
+			after = s
+		}
+	}
+	if len(after.Notes) == 0 || after.Notes[0].Position != before.Notes[1].Position-crop || after.Notes[0].Pitch != before.Notes[1].Pitch {
+		t.Errorf("cropped region starts with %+v, want note 2 (pitch %d) at %d", after.Notes[:min(1, len(after.Notes))], before.Notes[1].Pitch, before.Position)
+	}
+}
