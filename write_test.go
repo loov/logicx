@@ -1608,3 +1608,121 @@ func TestAudioRegion_RenamePadsOddNames(t *testing.T) {
 		t.Error("renaming back does not restore the chunk")
 	}
 }
+
+// sameExcept reports whether a and b differ only within the given spans,
+// each an offset and a length.
+func sameExcept(a, b []byte, spans ...[2]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a, b = slices.Clone(a), slices.Clone(b)
+	for _, s := range spans {
+		clear(a[s[0] : s[0]+s[1]])
+		clear(b[s[0] : s[0]+s[1]])
+	}
+	return slices.Equal(a, b)
+}
+
+// audioRegionStamp is a value Logic rewrites whenever it edits a region.
+var audioRegionStamp = [2]int{42, 8}
+
+func TestAudioPlacement_LoopReproducesLogic(t *testing.T) {
+	logic := parseFixtureProject(t, "regions-audio-loop.logicx")
+	want := logic.AudioPlacements[1]
+	if want.Loop != 15360 || logic.AudioPlacements[0].Loop != 0 {
+		t.Fatalf("loops = %d and %d, want 0 and four bars", logic.AudioPlacements[0].Loop, want.Loop)
+	}
+	p := parseFixtureProject(t, "regions-audio-base.logicx")
+	a := &p.AudioPlacements[1]
+	a.Loop = 15360
+	if err := a.Save(); err != nil {
+		t.Fatal(err)
+	}
+	// Byte 13's 0x01 and byte 15 mark the region Logic last selected.
+	if !sameExcept(a.ref.event.Data, want.ref.event.Data, [2]int{13, 1}, [2]int{15, 1}) || a.ref.event.Data[13] != want.ref.event.Data[13]&^0x01 {
+		t.Errorf("looped event\n% x\nwant\n% x", a.ref.event.Data, want.ref.event.Data)
+	}
+	a.Loop = 0
+	if err := a.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if base := parseFixtureProject(t, "regions-audio-base.logicx"); !slices.Equal(a.ref.event.Data, base.AudioPlacements[1].ref.event.Data) {
+		t.Error("unlooping does not restore the event")
+	}
+}
+
+func TestAudioRegion_TrimReproducesLogic(t *testing.T) {
+	logic := parseFixtureProject(t, "regions-audio-trim.logicx")
+	p := parseFixtureProject(t, "regions-audio-base.logicx")
+	r, want := &p.AudioRegions[0], logic.AudioRegions[0]
+	r.Offset, r.Frames = want.Offset, want.Frames
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if !sameExcept(r.chunk.Data, want.chunk.Data, audioRegionStamp) {
+		t.Errorf("trimmed region\n% x\nwant\n% x", r.chunk.Data, want.chunk.Data)
+	}
+	a, wantA := &p.AudioPlacements[0], logic.AudioPlacements[0]
+	a.Position, a.Fraction = wantA.Position, wantA.Fraction
+	if err := a.Save(); err != nil {
+		t.Fatal(err)
+	}
+	// Logic also caches the region's length in atoms after the event.
+	got, w := a.ref.event.Data, wantA.ref.event.Data[:audioPlacementMinimum]
+	if !sameExcept(got, w, [2]int{13, 1}, [2]int{15, 1}) {
+		t.Errorf("trimmed placement\n% x\nwant\n% x", got, w)
+	}
+}
+
+func TestAudioRegion_SplitReproducesLogic(t *testing.T) {
+	logic := parseFixtureProject(t, "regions-audio-split.logicx")
+	p := parseFixtureProject(t, "regions-audio-base.logicx")
+	first := &p.AudioRegions[0]
+	second, err := p.DuplicateAudioRegion(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Frames = logic.AudioRegions[0].Frames
+	second.Name, second.Offset, second.Frames = "Reindeer Snort.1", logic.AudioRegions[1].Offset, logic.AudioRegions[1].Frames
+	if err := errors.Join(first.Save(), second.Save()); err != nil {
+		t.Fatal(err)
+	}
+	p.Refresh()
+	placed, err := p.AudioPlacements[0].Duplicate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := logic.AudioPlacements[1]
+	placed.Region, placed.Position, placed.Fraction = 1, want.Position, want.Fraction
+	if err := placed.Save(); err != nil {
+		t.Fatal(err)
+	}
+	p.Refresh()
+
+	if len(p.AudioRegions) != 3 || len(p.AudioPlacements) != 3 {
+		t.Fatalf("%d regions and %d placements, want 3 and 3", len(p.AudioRegions), len(p.AudioPlacements))
+	}
+	for i, r := range p.AudioRegions {
+		w := logic.AudioRegions[i]
+		// The payload size in the header is written when the project is.
+		if !slices.Equal(r.chunk.Header[:28], w.chunk.Header[:28]) {
+			t.Errorf("region %d header\n% x\nwant\n% x", i, r.chunk.Header[:28], w.chunk.Header[:28])
+		}
+		// The UUID is new, and Logic marks the regions of a split at tail+122.
+		tail := len(w.chunk.Data) - audioRegionTail
+		if !sameExcept(r.chunk.Data, w.chunk.Data, audioRegionStamp, [2]int{tail + audioRegionUUID, 16}, [2]int{tail + 122, 4}) {
+			t.Errorf("region %d\n% x\nwant\n% x", i, r.chunk.Data, w.chunk.Data)
+		}
+	}
+	for i, a := range p.AudioPlacements {
+		w := logic.AudioPlacements[i]
+		if a.Region != w.Region || a.Position != w.Position || a.Fraction != w.Fraction {
+			t.Errorf("placement %d = region %d at %d.%d, want region %d at %d.%d", i, a.Region, a.Position, a.Fraction, w.Region, w.Position, w.Fraction)
+		}
+	}
+	for i, f := range p.AudioFiles {
+		if !slices.Equal(f.chunk.Data, logic.AudioFiles[i].chunk.Data) {
+			t.Errorf("file %q differs from Logic's", f.Name)
+		}
+	}
+}

@@ -411,6 +411,76 @@ var edits = []edit{
 			return expect(p.AudioPlacements[1].FadeIn == 1000, "placement %+v", p.AudioPlacements[1])
 		}, a.Save()
 	}},
+	{"audio-trim", "regions-audio-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		if len(p.AudioRegions) < 1 || len(p.AudioPlacements) < 1 {
+			return nil, errors.New("no audio regions")
+		}
+		// As regions-audio-trim: a beat off each end of Reindeer Snort.
+		r := &p.AudioRegions[0]
+		r.Offset, r.Frames = 22044, 44079
+		if err := r.Save(); err != nil {
+			return nil, err
+		}
+		a := &p.AudioPlacements[0]
+		a.Position, a.Fraction = 39359, 48417
+		return func(p logicx.ProjectData) error {
+			if len(p.AudioRegions) < 1 || len(p.AudioPlacements) < 1 {
+				return errors.New("the audio regions are gone")
+			}
+			r, a := p.AudioRegions[0], p.AudioPlacements[0]
+			return expect(r.Offset == 22044 && r.Frames == 44079 && a.Position == 39359, "region %+v placed at %d", r, a.Position)
+		}, a.Save()
+	}},
+	{"audio-split-loop", "regions-audio-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		if len(p.AudioRegions) < 2 || len(p.AudioPlacements) < 2 {
+			return nil, errors.New("no audio regions")
+		}
+		// As regions-audio-split: Reindeer Snort split three beats in.
+		first := &p.AudioRegions[0]
+		second, err := p.DuplicateAudioRegion(first)
+		if err != nil {
+			return nil, err
+		}
+		first.Frames = 66123
+		second.Name, second.Offset, second.Frames = first.Name+".1", 66123, 19985
+		if err := errors.Join(first.Save(), second.Save()); err != nil {
+			return nil, err
+		}
+		// As regions-audio-loop: Tiger Growl looped to bar 7.
+		looped := &p.AudioPlacements[1]
+		looped.Loop = 15360
+		if err := looped.Save(); err != nil {
+			return nil, err
+		}
+		p.Refresh()
+		placed, err := p.AudioPlacements[0].Duplicate()
+		if err != nil {
+			return nil, err
+		}
+		placed.Region, placed.Position, placed.Fraction = 1, 41278, 54034
+		return func(p logicx.ProjectData) error {
+			if len(p.AudioRegions) != 3 || len(p.AudioPlacements) != 3 {
+				return fmt.Errorf("%d regions and %d placements, want 3 and 3", len(p.AudioRegions), len(p.AudioPlacements))
+			}
+			r := p.AudioRegions[1]
+			if err := expect(r.Name == "Reindeer Snort.1" && r.Offset == 66123 && r.Frames == 19985 && p.AudioRegions[0].Frames == 66123, "regions %+v", p.AudioRegions); err != nil {
+				return err
+			}
+			for _, a := range p.AudioPlacements {
+				switch a.Region {
+				case 1:
+					if err := expect(a.Position == 41278, "split placement %+v", a); err != nil {
+						return err
+					}
+				case 2:
+					if err := expect(a.Loop == 15360, "looped placement %+v", a); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}, placed.Save()
+	}},
 	{"region-move", "regions-more", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		r := region(p, "Inst 4")
 		if r == nil || len(p.AudioPlacements) < 2 {

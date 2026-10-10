@@ -4,11 +4,13 @@ package logicx
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
 	"slices"
+	"unicode/utf16"
 
 	"github.com/loov/logicx/internal/record"
 	"howett.net/plist"
@@ -51,7 +53,10 @@ const (
 	// files seen, plausibly the length of the waveform overview Logic draws
 	// from.
 	audioFileOverview = 530
-	audioFileTail     = 578
+	// audioFileRegions is how many regions of the file the project has,
+	// numbered from zero in their chunk headers.
+	audioFileRegions = 508
+	audioFileTail    = 578
 )
 
 // fields is the layout of an audio file chunk. overview is held apart from f:
@@ -142,6 +147,8 @@ const (
 	// audioRegionTail is everything after the name and the zero byte that
 	// pads an odd-length name: padding, the region's UUID and trailing fields.
 	audioRegionTail = 133
+	// audioRegionUUID is where the region's UUID starts in the tail.
+	audioRegionUUID = 86
 )
 
 // fields is the layout of an audio region chunk.
@@ -192,6 +199,56 @@ func (r *AudioRegion) Save() error {
 	return nil
 }
 
+// audioRegionFile and audioRegionNumber are where an audio region's chunk
+// header holds its file, as the file's chunk header does, and its number
+// among that file's regions.
+const (
+	audioRegionFile   = 10
+	audioRegionNumber = 14
+)
+
+// DuplicateAudioRegion inserts a copy of r, a region of p, after the last
+// region of its file and returns the copy, to be changed and saved. The copy
+// has the next number in its file and a new UUID; Logic gives a split region
+// these and the name "name.1". p.AudioRegions is not updated; see
+// [ProjectData.Refresh].
+func (p *ProjectData) DuplicateAudioRegion(r *AudioRegion) (AudioRegion, error) {
+	at := slices.Index(p.Chunks, r.chunk)
+	if r.chunk == nil || at < 0 {
+		return AudioRegion{}, errors.New("logicx: audio region is not in the project")
+	}
+	file := r.chunk.Header[audioRegionFile : audioRegionFile+4]
+	var count []byte
+	for i, c := range p.Chunks {
+		switch {
+		case c.Type == audioFileChunk && bytes.Equal(c.Header[audioRegionFile:audioRegionFile+4], file):
+			var f AudioFile
+			var overview uint32
+			if !record.Decode(c.Data, f.fields(&overview)...) {
+				return AudioRegion{}, fmt.Errorf("logicx: audio region %q: its file's chunk does not decode", r.Name)
+			}
+			end := audioFileNameLength + 2 + 2*len(utf16.Encode([]rune(f.Name)))
+			count = c.Data[end+audioFileRegions : end+audioFileRegions+4]
+		case c.Type == audioRegionChunk && bytes.Equal(c.Header[audioRegionFile:audioRegionFile+4], file):
+			at = i
+		}
+	}
+	if count == nil {
+		return AudioRegion{}, fmt.Errorf("logicx: audio region %q has no file", r.Name)
+	}
+	number := binary.LittleEndian.Uint32(count)
+	chunk := &Chunk{Type: r.chunk.Type, Header: r.chunk.Header, Data: bytes.Clone(r.chunk.Data)}
+	binary.LittleEndian.PutUint32(chunk.Header[audioRegionNumber:], number)
+	uuid := chunk.Data[len(chunk.Data)-audioRegionTail+audioRegionUUID:][:16]
+	rand.Read(uuid)
+	uuid[6], uuid[8] = uuid[6]&0x0f|0x40, uuid[8]&0x3f|0x80
+	binary.LittleEndian.PutUint32(count, number+1)
+	p.Chunks = slices.Insert(p.Chunks, at+1, chunk)
+	copied := *r
+	copied.chunk = chunk
+	return copied, nil
+}
+
 // audioRegionPadded reports whether data, an audio region chunk named name,
 // has a zero pad byte after an odd-length name and the tail after that.
 func audioRegionPadded(data []byte, name string) bool {
@@ -209,7 +266,8 @@ func audioRegionPadded(data []byte, name string) bool {
 // arrange sequence naming the region by its audio file and its number within
 // that file.
 type AudioPlacement struct {
-	// Region is the placed region's index in ProjectData.AudioRegions.
+	// Region is the placed region's index in ProjectData.AudioRegions. Save
+	// can place another region of the project as it was decoded.
 	Region int
 	// Position and Fraction are on the same timeline as [MIDINote.Position].
 	Position uint32
@@ -221,10 +279,17 @@ type AudioPlacement struct {
 	Mute  bool
 	// Gain is the region's gain in dB, and FadeIn and FadeOut its fades in
 	// milliseconds.
-	Gain        int8
-	FadeIn      uint32
-	FadeOut     uint32
+	Gain    int8
+	FadeIn  uint32
+	FadeOut uint32
+	// Loop is how long the looped region plays from its start, in ticks, or
+	// zero when it is not looped.
+	Loop uint32
+	// unlooped is how the event marks an unlooped region: Logic writes
+	// noRegionLoop, and some projects zero.
+	unlooped    uint32
 	ref         eventRef
+	regions     []audioRegionKey
 	trackObject uint32
 	track       string
 	arrange     map[string]arrangeTarget
@@ -234,22 +299,29 @@ const (
 	eventAudioRegion = 0x24
 	// audioPlacementRegion and audioPlacementFile hold the region's
 	// AuRg header fields [14:16] and [10:14].
-	audioPlacementRegion  = 40
-	audioPlacementFile    = 44
-	audioPlacementGain    = 52
-	audioPlacementFadeOut = 72
-	audioPlacementFadeIn  = 76
-	audioPlacementMinimum = 80
+	audioPlacementRegion = 40
+	audioPlacementFile   = 44
+	audioPlacementLoop   = 28
+	// audioPlacementLooped holds the bits Logic sets on a looped region.
+	audioPlacementLooped     = 13
+	audioPlacementLoopedBits = 0x12
+	audioPlacementGain       = 52
+	audioPlacementFadeOut    = 72
+	audioPlacementFadeIn     = 76
+	audioPlacementMinimum    = 80
 )
 
 // fields is the layout of an audio placement; position is the stored form of
 // Position and gain of Gain.
-func (a *AudioPlacement) fields(position *uint32, gain *uint8) []record.Field {
+func (a *AudioPlacement) fields(position *uint32, gain *uint8, loop *uint32, key *audioRegionKey) []record.Field {
 	return []record.Field{
 		record.Equal(0, eventAudioRegion),
 		record.Uint16LE(2, &a.Fraction),
 		record.Uint32LE(4, position),
 		record.Bit(linkMute, 0x01, &a.Mute),
+		record.Uint32LE(audioPlacementLoop, loop),
+		record.Uint32LE(audioPlacementRegion, &key.region),
+		record.Uint32LE(audioPlacementFile, &key.file),
 		record.Uint8(audioPlacementGain, gain),
 		record.Equal(55, 0x8a),
 		record.Equal(71, 0x89),
@@ -258,16 +330,20 @@ func (a *AudioPlacement) fields(position *uint32, gain *uint8) []record.Field {
 	}
 }
 
+// audioRegionKey is how a placement names its region.
+type audioRegionKey struct {
+	file   uint32
+	region uint32
+}
+
 // findAudioPlacements decodes the placements of regions, in file order. A
 // placement naming no region is left out.
 func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacement {
-	type key struct {
-		file   uint32
-		region uint32
-	}
-	byKey := make(map[key]int, len(regions))
+	keys := make([]audioRegionKey, len(regions))
+	byKey := make(map[audioRegionKey]int, len(regions))
 	for i, r := range regions {
-		byKey[key{binary.LittleEndian.Uint32(r.chunk.Header[10:]), uint32(binary.LittleEndian.Uint16(r.chunk.Header[14:]))}] = i
+		keys[i] = audioRegionKey{binary.LittleEndian.Uint32(r.chunk.Header[audioRegionFile:]), binary.LittleEndian.Uint32(r.chunk.Header[audioRegionNumber:])}
+		byKey[keys[i]] = i
 	}
 	var placements []AudioPlacement
 	sequenceEvents(chunks, func(chunk *Chunk, event *Event) {
@@ -275,14 +351,24 @@ func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacemen
 		if event.Type != eventAudioRegion || len(d) < audioPlacementMinimum {
 			return
 		}
-		region, ok := byKey[key{binary.LittleEndian.Uint32(d[audioPlacementFile:]), binary.LittleEndian.Uint32(d[audioPlacementRegion:])}]
 		var a AudioPlacement
-		var position uint32
+		var position, loop uint32
 		var gain uint8
-		if !ok || !record.Decode(d, a.fields(&position, &gain)...) || position > math.MaxUint32-projectChordPositionBias {
+		var key audioRegionKey
+		if !record.Decode(d, a.fields(&position, &gain, &loop, &key)...) || position > math.MaxUint32-projectChordPositionBias {
 			return
 		}
-		a.Region, a.Position, a.Gain = region, position+projectChordPositionBias, int8(gain)
+		region, ok := byKey[key]
+		if !ok {
+			return
+		}
+		a.unlooped = noRegionLoop
+		if loop == 0 || loop == noRegionLoop {
+			a.unlooped = loop
+		} else {
+			a.Loop = loop
+		}
+		a.Region, a.Position, a.Gain, a.regions = region, position+projectChordPositionBias, int8(gain), keys
 		a.trackObject = binary.LittleEndian.Uint32(d[linkTrack:])
 		a.ref = eventRef{chunk, event}
 		placements = append(placements, a)
@@ -290,25 +376,49 @@ func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacemen
 	return placements
 }
 
-// Save writes a's position, track, mute, gain and fades into its event, keeping the
-// sequence in time order. ProjectData.AudioPlacements is not updated; see
-// [ProjectData.Refresh].
+// Save writes a's region, position, track, mute, gain, fades and loop into
+// its event, keeping the sequence in time order. ProjectData.AudioPlacements
+// is not updated; see [ProjectData.Refresh].
 func (a *AudioPlacement) Save() error {
 	if a.Position < projectChordPositionBias {
 		return fmt.Errorf("logicx: audio region position %d precedes the project start", a.Position)
 	}
-	position, gain := a.Position-projectChordPositionBias, uint8(a.Gain)
+	if a.Region < 0 || a.Region >= len(a.regions) {
+		return fmt.Errorf("logicx: audio region %d is not in the project", a.Region)
+	}
+	if a.Loop >= noRegionLoop {
+		return fmt.Errorf("logicx: loop length %d is not valid", a.Loop)
+	}
+	position, gain, loop, key := a.Position-projectChordPositionBias, uint8(a.Gain), a.Loop, a.regions[a.Region]
+	looped := loop != 0
+	if !looped {
+		loop = a.unlooped
+	}
 	move, target, err := moveFields("audio region", a.track, a.Track, a.arrange)
 	if err != nil {
 		return err
 	}
-	if err := a.ref.save("audio region placement", append(a.fields(&position, &gain), move...)...); err != nil {
+	fields := append(a.fields(&position, &gain, &loop, &key), record.Bit(audioPlacementLooped, audioPlacementLoopedBits, &looped))
+	if err := a.ref.save("audio region placement", append(fields, move...)...); err != nil {
 		return err
 	}
 	if target != nil {
 		a.trackObject, a.track = target.object, a.Track
 	}
 	return nil
+}
+
+// Delete removes a's event, taking the region out of the arrangement; the
+// region stays in the project.
+func (a *AudioPlacement) Delete() error { return a.ref.delete("audio region placement") }
+
+// Duplicate inserts a copy of a's event after it and returns the copy, to be
+// changed and saved.
+func (a *AudioPlacement) Duplicate() (AudioPlacement, error) {
+	ref, err := a.ref.duplicate("audio region placement")
+	copied := *a
+	copied.ref = ref
+	return copied, err
 }
 
 // RenameLoops replaces the loop name old with name in the Apple Loops family
