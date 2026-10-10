@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/loov/logicx/internal/record"
 	"howett.net/plist"
@@ -127,25 +128,29 @@ type AudioRegion struct {
 	// long it is, in sample frames.
 	Offset uint32
 	Frames uint32
-	chunk  *Chunk
+	// Color is the region's color code, as [Track.Color].
+	Color uint8
+	chunk *Chunk
 }
 
 const (
 	audioRegionChunk      = "AuRg"
+	audioRegionColor      = 3
 	audioRegionOffset     = 6
 	audioRegionFrames     = 22
 	audioRegionNameLength = 74
-	// audioRegionTail is everything after the name: padding, the region's
-	// UUID and trailing fields.
-	audioRegionTail = 134
+	// audioRegionTail is everything after the name and the zero byte that
+	// pads an odd-length name: padding, the region's UUID and trailing fields.
+	audioRegionTail = 133
 )
 
 // fields is the layout of an audio region chunk.
 func (r *AudioRegion) fields() []record.Field {
 	return []record.Field{
+		record.Uint8(audioRegionColor, &r.Color),
 		record.Uint32LE(audioRegionOffset, &r.Offset),
 		record.Uint32LE(audioRegionFrames, &r.Frames),
-		record.String16(audioRegionNameLength, &r.Name, record.Len(audioRegionTail)),
+		record.String16(audioRegionNameLength, &r.Name),
 	}
 }
 
@@ -154,7 +159,7 @@ func findAudioRegions(chunks []*Chunk) []AudioRegion {
 	var regions []AudioRegion
 	for _, chunk := range chunks {
 		var region AudioRegion
-		if chunk.Type != audioRegionChunk || !record.Decode(chunk.Data, region.fields()...) {
+		if chunk.Type != audioRegionChunk || !record.Decode(chunk.Data, region.fields()...) || !audioRegionPadded(chunk.Data, region.Name) {
 			continue
 		}
 		region.chunk = chunk
@@ -169,16 +174,40 @@ func (r *AudioRegion) Save() error {
 	if r.chunk == nil {
 		return errors.New("logicx: audio region was not decoded from a project")
 	}
-	data, err := record.Encode(r.chunk.Data, r.fields()...)
+	old := r.chunk.Data
+	odd := int(binary.LittleEndian.Uint16(old[audioRegionNameLength:])) % 2
+	data, err := record.Encode(old, r.fields()...)
 	if err != nil {
 		return fmt.Errorf("logicx: audio region %q: %w", r.Name, err)
+	}
+	// The encoded name is followed by the old name's pad byte, if any.
+	end := audioRegionNameLength + 2 + len(r.Name)
+	switch {
+	case odd == 1 && len(r.Name)%2 == 0:
+		data = slices.Delete(data, end, end+1)
+	case odd == 0 && len(r.Name)%2 == 1:
+		data = slices.Insert(data, end, 0)
 	}
 	r.chunk.Data = data
 	return nil
 }
 
+// audioRegionPadded reports whether data, an audio region chunk named name,
+// has a zero pad byte after an odd-length name and the tail after that.
+func audioRegionPadded(data []byte, name string) bool {
+	end := audioRegionNameLength + 2 + len(name)
+	if len(name)%2 == 1 {
+		if end >= len(data) || data[end] != 0 {
+			return false
+		}
+		end++
+	}
+	return len(data)-end == audioRegionTail
+}
+
 // AudioPlacement is an audio region placed on a track: an event in the
-// arrange sequence naming the region by its index.
+// arrange sequence naming the region by its audio file and its number within
+// that file.
 type AudioPlacement struct {
 	// Region is the placed region's index in ProjectData.AudioRegions.
 	Region int
@@ -190,8 +219,8 @@ type AudioPlacement struct {
 	// track.
 	Track string
 	Mute  bool
-	// Gain is the region's gain in dB, and FadeIn and FadeOut its fades as
-	// Logic's region inspector shows them.
+	// Gain is the region's gain in dB, and FadeIn and FadeOut its fades in
+	// milliseconds.
 	Gain        int8
 	FadeIn      uint32
 	FadeOut     uint32
@@ -202,8 +231,11 @@ type AudioPlacement struct {
 }
 
 const (
-	eventAudioRegion      = 0x24
-	audioPlacementRegion  = 13
+	eventAudioRegion = 0x24
+	// audioPlacementRegion and audioPlacementFile hold the region's
+	// AuRg header fields [14:16] and [10:14].
+	audioPlacementRegion  = 40
+	audioPlacementFile    = 44
 	audioPlacementGain    = 52
 	audioPlacementFadeOut = 72
 	audioPlacementFadeIn  = 76
@@ -229,9 +261,13 @@ func (a *AudioPlacement) fields(position *uint32, gain *uint8) []record.Field {
 // findAudioPlacements decodes the placements of regions, in file order. A
 // placement naming no region is left out.
 func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacement {
-	byIndex := make(map[uint16]int, len(regions))
+	type key struct {
+		file   uint32
+		region uint32
+	}
+	byKey := make(map[key]int, len(regions))
 	for i, r := range regions {
-		byIndex[binary.LittleEndian.Uint16(r.chunk.Header[14:])] = i
+		byKey[key{binary.LittleEndian.Uint32(r.chunk.Header[10:]), uint32(binary.LittleEndian.Uint16(r.chunk.Header[14:]))}] = i
 	}
 	var placements []AudioPlacement
 	sequenceEvents(chunks, func(chunk *Chunk, event *Event) {
@@ -239,7 +275,7 @@ func findAudioPlacements(chunks []*Chunk, regions []AudioRegion) []AudioPlacemen
 		if event.Type != eventAudioRegion || len(d) < audioPlacementMinimum {
 			return
 		}
-		region, ok := byIndex[binary.LittleEndian.Uint16(d[audioPlacementRegion:])]
+		region, ok := byKey[key{binary.LittleEndian.Uint32(d[audioPlacementFile:]), binary.LittleEndian.Uint32(d[audioPlacementRegion:])}]
 		var a AudioPlacement
 		var position uint32
 		var gain uint8

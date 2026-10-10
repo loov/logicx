@@ -383,6 +383,34 @@ var edits = []edit{
 			return errors.New("the audio region is gone")
 		}, a.Save()
 	}},
+	{"audio-color", "regions-audio-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		if len(p.AudioRegions) < 2 || len(p.AudioPlacements) < 2 {
+			return nil, errors.New("no audio regions")
+		}
+		// The top-left palette color, as regions-audio-color has it.
+		colored := &p.AudioRegions[0]
+		colored.Color = 0x49
+		if err := colored.Save(); err != nil {
+			return nil, err
+		}
+		// An odd-length name gains a pad byte.
+		renamed := &p.AudioRegions[1]
+		renamed.Name = "Tiger Growl 1"
+		if err := renamed.Save(); err != nil {
+			return nil, err
+		}
+		a := &p.AudioPlacements[1]
+		a.FadeIn = 1000
+		return func(p logicx.ProjectData) error {
+			if len(p.AudioRegions) < 2 || len(p.AudioPlacements) < 2 {
+				return errors.New("the audio regions are gone")
+			}
+			if err := expect(p.AudioRegions[0].Color == 0x49 && p.AudioRegions[1].Name == "Tiger Growl 1", "regions %+v", p.AudioRegions); err != nil {
+				return err
+			}
+			return expect(p.AudioPlacements[1].FadeIn == 1000, "placement %+v", p.AudioPlacements[1])
+		}, a.Save()
+	}},
 	{"region-move", "regions-more", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		r := region(p, "Inst 4")
 		if r == nil || len(p.AudioPlacements) < 2 {

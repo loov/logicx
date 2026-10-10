@@ -1534,3 +1534,52 @@ func TestTransport_Save(t *testing.T) {
 		t.Error("Save() accepted a negative SMPTE start")
 	}
 }
+
+func TestAudioRegion_DecodesColorFadeAndEvenNames(t *testing.T) {
+	base := parseFixtureProject(t, "regions-audio-base.logicx")
+	// Both names have an even length, so no pad byte follows them.
+	if len(base.AudioRegions) != 2 || base.AudioRegions[0].Name != "Reindeer Snort" || base.AudioRegions[1].Name != "Tiger Growl 01" {
+		t.Fatalf("regions = %+v", base.AudioRegions)
+	}
+	// The two regions come from different files, both region 0 of their file.
+	if len(base.AudioPlacements) != 2 || base.AudioPlacements[0].Region != 0 || base.AudioPlacements[1].Region != 1 {
+		t.Fatalf("placements = %+v", base.AudioPlacements)
+	}
+
+	// Logic's top-left palette color, the first color code of a track's.
+	colored := parseFixtureProject(t, "regions-audio-color.logicx")
+	if got := colored.AudioRegions[0].Color; got != paletteFirst || base.AudioRegions[0].Color == got {
+		t.Errorf("color = %#x, base %#x", got, base.AudioRegions[0].Color)
+	}
+	region := &base.AudioRegions[0]
+	region.Color = paletteFirst
+	if err := region.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(region.chunk.Data[:audioRegionOffset], colored.AudioRegions[0].chunk.Data[:audioRegionOffset]) {
+		t.Error("the color does not match Logic's")
+	}
+
+	// A fade-in of 1000 ms, two beats at 120 BPM.
+	if got := parseFixtureProject(t, "regions-audio-fade.logicx").AudioPlacements[1].FadeIn; got != 1000 {
+		t.Errorf("fade-in = %d", got)
+	}
+}
+
+func TestAudioRegion_RenamePadsOddNames(t *testing.T) {
+	p := parseFixtureProject(t, "regions-audio-base.logicx")
+	original := slices.Clone(p.AudioRegions[0].chunk.Data)
+	for _, name := range []string{"Reindeer Snorts", "Reindeer Snort"} {
+		p.AudioRegions[0].Name = name
+		if err := p.AudioRegions[0].Save(); err != nil {
+			t.Fatal(err)
+		}
+		got := reparse(t, &p)
+		if len(got.AudioRegions) != 2 || got.AudioRegions[0].Name != name {
+			t.Fatalf("renamed to %q, reparsed %+v", name, got.AudioRegions)
+		}
+	}
+	if !slices.Equal(p.AudioRegions[0].chunk.Data, original) {
+		t.Error("renaming back does not restore the chunk")
+	}
+}
