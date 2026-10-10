@@ -217,24 +217,15 @@ func (p *ProjectData) DuplicateAudioRegion(r *AudioRegion) (AudioRegion, error) 
 	if r.chunk == nil || at < 0 {
 		return AudioRegion{}, errors.New("logicx: audio region is not in the project")
 	}
+	count, err := p.audioRegionCount(r)
+	if err != nil {
+		return AudioRegion{}, err
+	}
 	file := r.chunk.Header[audioRegionFile : audioRegionFile+4]
-	var count []byte
 	for i, c := range p.Chunks {
-		switch {
-		case c.Type == audioFileChunk && bytes.Equal(c.Header[audioRegionFile:audioRegionFile+4], file):
-			var f AudioFile
-			var overview uint32
-			if !record.Decode(c.Data, f.fields(&overview)...) {
-				return AudioRegion{}, fmt.Errorf("logicx: audio region %q: its file's chunk does not decode", r.Name)
-			}
-			end := audioFileNameLength + 2 + 2*len(utf16.Encode([]rune(f.Name)))
-			count = c.Data[end+audioFileRegions : end+audioFileRegions+4]
-		case c.Type == audioRegionChunk && bytes.Equal(c.Header[audioRegionFile:audioRegionFile+4], file):
+		if c.Type == audioRegionChunk && bytes.Equal(c.Header[audioRegionFile:audioRegionFile+4], file) {
 			at = i
 		}
-	}
-	if count == nil {
-		return AudioRegion{}, fmt.Errorf("logicx: audio region %q has no file", r.Name)
 	}
 	number := binary.LittleEndian.Uint32(count)
 	chunk := &Chunk{Type: r.chunk.Type, Header: r.chunk.Header, Data: bytes.Clone(r.chunk.Data)}
@@ -247,6 +238,62 @@ func (p *ProjectData) DuplicateAudioRegion(r *AudioRegion) (AudioRegion, error) 
 	copied := *r
 	copied.chunk = chunk
 	return copied, nil
+}
+
+// DeleteAudioRegion removes r, a region of p, and its placements, as Logic's
+// project audio browser does. The file's later regions are numbered down to
+// close the gap, and their placements with them. p's values are not updated;
+// see [ProjectData.Refresh].
+func (p *ProjectData) DeleteAudioRegion(r *AudioRegion) error {
+	at := slices.Index(p.Chunks, r.chunk)
+	if r.chunk == nil || at < 0 {
+		return errors.New("logicx: audio region is not in the project")
+	}
+	count, err := p.audioRegionCount(r)
+	if err != nil {
+		return err
+	}
+	file := binary.LittleEndian.Uint32(r.chunk.Header[audioRegionFile:])
+	number := binary.LittleEndian.Uint32(r.chunk.Header[audioRegionNumber:])
+	p.Chunks = slices.Delete(p.Chunks, at, at+1)
+	for _, c := range p.Chunks {
+		if c.Type == audioRegionChunk && binary.LittleEndian.Uint32(c.Header[audioRegionFile:]) == file {
+			if n := binary.LittleEndian.Uint32(c.Header[audioRegionNumber:]); n > number {
+				binary.LittleEndian.PutUint32(c.Header[audioRegionNumber:], n-1)
+			}
+		}
+		c.Events = slices.DeleteFunc(c.Events, func(e *Event) bool {
+			d := e.Data
+			if e.Type != eventAudioRegion || len(d) < audioPlacementMinimum || binary.LittleEndian.Uint32(d[audioPlacementFile:]) != file {
+				return false
+			}
+			n := binary.LittleEndian.Uint32(d[audioPlacementRegion:])
+			if n > number {
+				binary.LittleEndian.PutUint32(d[audioPlacementRegion:], n-1)
+			}
+			return n == number
+		})
+	}
+	binary.LittleEndian.PutUint32(count, binary.LittleEndian.Uint32(count)-1)
+	return nil
+}
+
+// audioRegionCount returns the bytes of the count of regions in r's file.
+func (p *ProjectData) audioRegionCount(r *AudioRegion) ([]byte, error) {
+	file := r.chunk.Header[audioRegionFile : audioRegionFile+4]
+	for _, c := range p.Chunks {
+		if c.Type != audioFileChunk || !bytes.Equal(c.Header[audioRegionFile:audioRegionFile+4], file) {
+			continue
+		}
+		var f AudioFile
+		var overview uint32
+		if !record.Decode(c.Data, f.fields(&overview)...) {
+			return nil, fmt.Errorf("logicx: audio region %q: its file's chunk does not decode", r.Name)
+		}
+		end := audioFileNameLength + 2 + 2*len(utf16.Encode([]rune(f.Name)))
+		return c.Data[end+audioFileRegions : end+audioFileRegions+4], nil
+	}
+	return nil, fmt.Errorf("logicx: audio region %q has no file", r.Name)
 }
 
 // audioRegionPadded reports whether data, an audio region chunk named name,

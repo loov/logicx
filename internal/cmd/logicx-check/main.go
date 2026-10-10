@@ -481,6 +481,19 @@ var edits = []edit{
 			return nil
 		}, placed.Save()
 	}},
+	{"audio-delete", "regions-audio-split", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		if len(p.AudioRegions) != 3 {
+			return nil, errors.New("not the three split regions")
+		}
+		// As regions-audio-delete-first: the second half is renumbered.
+		return func(p logicx.ProjectData) error {
+			if len(p.AudioRegions) != 2 || len(p.AudioPlacements) != 2 {
+				return fmt.Errorf("%d regions and %d placements, want 2 and 2", len(p.AudioRegions), len(p.AudioPlacements))
+			}
+			a := p.AudioPlacements[0]
+			return expect(p.AudioRegions[a.Region].Name == "Reindeer Snort.1" && a.Position == 41278, "placement %+v of %+v", a, p.AudioRegions)
+		}, p.DeleteAudioRegion(&p.AudioRegions[0])
+	}},
 	{"region-move", "regions-more", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		r := region(p, "Inst 4")
 		if r == nil || len(p.AudioPlacements) < 2 {

@@ -1726,3 +1726,37 @@ func TestAudioRegion_SplitReproducesLogic(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectData_DeleteAudioRegionReproducesLogic(t *testing.T) {
+	for i, fixture := range []string{"regions-audio-delete-first.logicx", "regions-audio-delete-second.logicx"} {
+		logic := parseFixtureProject(t, fixture)
+		p := parseFixtureProject(t, "regions-audio-split.logicx")
+		if err := p.DeleteAudioRegion(&p.AudioRegions[i]); err != nil {
+			t.Fatal(err)
+		}
+		p.Refresh()
+		if len(p.AudioRegions) != len(logic.AudioRegions) || len(p.AudioPlacements) != len(logic.AudioPlacements) {
+			t.Fatalf("%s: %d regions and %d placements, want %d and %d", fixture, len(p.AudioRegions), len(p.AudioPlacements), len(logic.AudioRegions), len(logic.AudioPlacements))
+		}
+		for j, r := range p.AudioRegions {
+			w := logic.AudioRegions[j]
+			// Logic also changed bytes 38 and 140 while the browser was used,
+			// which Delete leaves alone.
+			if !slices.Equal(r.chunk.Header[:28], w.chunk.Header[:28]) || !sameExcept(r.chunk.Data, w.chunk.Data, audioRegionStamp, [2]int{38, 1}, [2]int{140, 1}) {
+				t.Errorf("%s: region %q differs from Logic's", fixture, r.Name)
+			}
+		}
+		for j, a := range p.AudioPlacements {
+			// Bytes 13 and 15 mark the region Logic last selected.
+			if !sameExcept(a.ref.event.Data, logic.AudioPlacements[j].ref.event.Data[:len(a.ref.event.Data)], [2]int{13, 1}, [2]int{15, 1}) {
+				t.Errorf("%s: placement %d\n% x\nwant\n% x", fixture, j, a.ref.event.Data, logic.AudioPlacements[j].ref.event.Data)
+			}
+		}
+		for j, f := range p.AudioFiles {
+			// As for regions, bytes 53 and 506:510 are left to Logic.
+			if !sameExcept(f.chunk.Data, logic.AudioFiles[j].chunk.Data, [2]int{53, 1}, [2]int{506, 4}) {
+				t.Errorf("%s: file %q differs from Logic's", fixture, f.Name)
+			}
+		}
+	}
+}
