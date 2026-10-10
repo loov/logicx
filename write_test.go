@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"os"
@@ -1758,5 +1759,172 @@ func TestProjectData_DeleteAudioRegionReproducesLogic(t *testing.T) {
 				t.Errorf("%s: file %q differs from Logic's", fixture, f.Name)
 			}
 		}
+	}
+}
+
+// sameArrangeTracks reports how p's arrange tracks differ from Logic's,
+// leaving out the bits marking the selected and armed track, and the ID of
+// the track at row fresh, which is new.
+func sameArrangeTracks(p, logic ProjectData, fresh int) error {
+	if len(p.ArrangeTracks) != len(logic.ArrangeTracks) {
+		return fmt.Errorf("%d arrange tracks, want %d", len(p.ArrangeTracks), len(logic.ArrangeTracks))
+	}
+	for i, a := range p.ArrangeTracks {
+		w := logic.ArrangeTracks[i]
+		spans := [][2]int{{arrangeTrackFlags, 1}, {arrangeTrackSelected, 1}, {arrangeTrackSelectedAlso, 1}}
+		if a.Row == fresh {
+			spans = append(spans, [2]int{arrangeTrackID, 16})
+		}
+		if a.Row != w.Row || a.Track != w.Track || a.chunk.Header != w.chunk.Header || !sameExcept(a.chunk.Data, w.chunk.Data, spans...) {
+			return fmt.Errorf("row %d: %q\n% x\n% x\nwant row %d: %q\n% x\n% x", a.Row, a.Track, a.chunk.Header, a.chunk.Data, w.Row, w.Track, w.chunk.Header, w.chunk.Data)
+		}
+	}
+	return nil
+}
+
+// regionRows returns the row and track of each region link, by position.
+func regionRows(p ProjectData) map[uint32]string {
+	rows := make(map[uint32]string)
+	for _, link := range p.arrangeLinks() {
+		rows[binary.LittleEndian.Uint32(link.Data[4:])] = fmt.Sprintf("row %d of %#x", linkRowOf(link), binary.LittleEndian.Uint32(link.Data[linkTrack:]))
+	}
+	return rows
+}
+
+// selectedRow returns the song's two copies of the selected row.
+func selectedRow(p *ProjectData) [2]uint16 {
+	song := p.songChunk()
+	return [2]uint16{binary.LittleEndian.Uint16(song.Data[songSelectedRow[0]:]), binary.LittleEndian.Uint16(song.Data[songSelectedRow[1]:])}
+}
+
+func TestProjectData_DeleteArrangeTrackReproducesLogic(t *testing.T) {
+	for _, c := range []struct {
+		base, logic string
+		row         int
+	}{
+		{"tracks-base.logicx", "tracks-delete-middle.logicx", 2},
+		{"tracks-base.logicx", "tracks-delete-last.logicx", 3},
+		{"tracks-region-base.logicx", "tracks-region-delete-middle.logicx", 2},
+	} {
+		logic := parseFixtureProject(t, c.logic)
+		p := parseFixtureProject(t, c.base)
+		deleted := p.ArrangeTracks[c.row-1]
+		if err := p.DeleteArrangeTrack(&deleted); err != nil {
+			t.Fatal(err)
+		}
+		p.Refresh()
+		if err := sameArrangeTracks(p, logic, 0); err != nil {
+			t.Errorf("%s: %v", c.logic, err)
+		}
+		if g, w := regionRows(p), regionRows(logic); !reflect.DeepEqual(g, w) {
+			t.Errorf("%s: regions %v, want %v", c.logic, g, w)
+		}
+		if g, w := selectedRow(&p), selectedRow(&logic); g != w {
+			t.Errorf("%s: selected row %v, want %v", c.logic, g, w)
+		}
+		// Unlike in Logic's save, the strip stays, with its environment
+		// object.
+		name := func(o EnvironmentObject) string { return o.Name }
+		if g, w := mapSlice(p.Environment, name), mapSlice(parseFixtureProject(t, c.base).Environment, name); !slices.Equal(g, w) {
+			t.Errorf("%s: environment objects %q, want %q", c.logic, g, w)
+		}
+	}
+}
+
+func TestProjectData_DeleteArrangeTrackRefuses(t *testing.T) {
+	p := parseFixtureProject(t, "tracks-region-base.logicx")
+	if err := p.DeleteArrangeTrack(&p.ArrangeTracks[2]); err == nil {
+		t.Error("deleted a track with a region on it")
+	}
+	if err := p.DeleteArrangeTrack(&p.ArrangeTracks[3]); err == nil {
+		t.Error("deleted the output track")
+	}
+}
+
+func TestProjectData_DeleteArrangeTrackKeepsASharedStrip(t *testing.T) {
+	p := parseFixtureProject(t, "tracks-same-instrument.logicx")
+	if err := p.DeleteArrangeTrack(&p.ArrangeTracks[3]); err != nil {
+		t.Fatal(err)
+	}
+	p.Refresh()
+	// The strip is still played by row 3, as in the project before.
+	if err := sameArrangeTracks(p, parseFixtureProject(t, "tracks-base.logicx"), 0); err != nil {
+		t.Error(err)
+	}
+	if !slices.ContainsFunc(p.Environment, func(o EnvironmentObject) bool { return o.Name == "Inst 3" }) {
+		t.Error("Inst 3 lost its environment object")
+	}
+}
+
+func TestProjectData_DuplicateArrangeTrackReproducesLogic(t *testing.T) {
+	for _, c := range []struct {
+		base, logic string
+		row         int
+	}{
+		{"tracks-base.logicx", "tracks-same-instrument.logicx", 3},
+		{"tracks-region-base.logicx", "tracks-region-same-instrument.logicx", 1},
+	} {
+		logic := parseFixtureProject(t, c.logic)
+		p := parseFixtureProject(t, c.base)
+		selected := selectedRow(&p)
+		added, err := p.DuplicateArrangeTrack(&p.ArrangeTracks[c.row-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if added.Row != c.row+1 || added.Track != p.ArrangeTracks[c.row-1].Track {
+			t.Errorf("%s: added %+v", c.logic, added)
+		}
+		p.Refresh()
+		if err := sameArrangeTracks(p, logic, c.row+1); err != nil {
+			t.Errorf("%s: %v", c.logic, err)
+		}
+		if bytes.Equal(p.ArrangeTracks[c.row].chunk.Data[arrangeTrackID:][:16], p.ArrangeTracks[c.row-1].chunk.Data[arrangeTrackID:][:16]) {
+			t.Errorf("%s: the new track has its original's ID", c.logic)
+		}
+		if g, w := regionRows(p), regionRows(logic); !reflect.DeepEqual(g, w) {
+			t.Errorf("%s: regions %v, want %v", c.logic, g, w)
+		}
+		// Logic selects the new track; Duplicate keeps the selected track,
+		// which moves down when it was below.
+		want := selected
+		if int(want[0]) > c.row {
+			want = [2]uint16{want[0] + 1, want[1] + 1}
+		}
+		if g := selectedRow(&p); g != want {
+			t.Errorf("%s: selected row %v, want %v", c.logic, g, want)
+		}
+	}
+}
+
+func mapSlice[T, U any](s []T, f func(T) U) []U {
+	out := make([]U, len(s))
+	for i, v := range s {
+		out[i] = f(v)
+	}
+	return out
+}
+
+func TestProjectData_ArrangeTrackRowCountReproducesLogic(t *testing.T) {
+	count := func(p ProjectData) uint32 {
+		for _, c := range p.Chunks {
+			if c.Type == "MSeq" && chunkSequenceID(c) == (chordSequenceID{arrangeTrackGroup, arrangeTrackSequence}) {
+				return binary.LittleEndian.Uint32(c.Data[len(c.Data)-arrangeRowsTail:])
+			}
+		}
+		return 0
+	}
+	p := parseFixtureProject(t, "tracks-region-base.logicx")
+	if err := p.DeleteArrangeTrack(&p.ArrangeTracks[1]); err != nil {
+		t.Fatal(err)
+	}
+	if g, w := count(p), count(parseFixtureProject(t, "tracks-region-delete-middle.logicx")); g != w {
+		t.Errorf("after a delete, rows count %d, want %d", g, w)
+	}
+	p = parseFixtureProject(t, "tracks-region-base.logicx")
+	if _, err := p.DuplicateArrangeTrack(&p.ArrangeTracks[0]); err != nil {
+		t.Fatal(err)
+	}
+	if g, w := count(p), count(parseFixtureProject(t, "tracks-region-same-instrument.logicx")); g != w {
+		t.Errorf("after an add, rows count %d, want %d", g, w)
 	}
 }

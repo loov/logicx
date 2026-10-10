@@ -892,3 +892,23 @@ func TestDecodeTempoChange_AcceptsFlag01(t *testing.T) {
 		t.Fatalf("decoded %+v, %v", change, ok)
 	}
 }
+
+func TestProjectData_DecodesArrangeTracks(t *testing.T) {
+	for fixture, want := range map[string][]string{
+		"tracks-base.logicx":            {"Inst 1", "Inst 2", "Inst 3", "Output 1-2"},
+		"tracks-same-instrument.logicx": {"Inst 1", "Inst 2", "Inst 3", "Inst 3", "Output 1-2"},
+		"tracks-delete-middle.logicx":   {"Inst 1", "Inst 3", "Output 1-2"},
+	} {
+		p := parseFixtureProject(t, fixture)
+		var got []string
+		for i, a := range p.ArrangeTracks {
+			if a.Row != i+1 || a.Output != (i == len(p.ArrangeTracks)-1) {
+				t.Errorf("%s: track %d is on row %d, output %v", fixture, i, a.Row, a.Output)
+			}
+			got = append(got, a.Track)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: arrange tracks %q, want %q", fixture, got, want)
+		}
+	}
+}

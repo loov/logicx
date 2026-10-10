@@ -12,10 +12,13 @@ import (
 
 // ProjectData contains both lossless chunks and decoded records.
 type ProjectData struct {
-	Header         [24]byte
-	Chunks         []*Chunk
-	AudioUnits     []AudioUnit
-	Tracks         []Track
+	Header     [24]byte
+	Chunks     []*Chunk
+	AudioUnits []AudioUnit
+	Tracks     []Track
+	// ArrangeTracks are the tracks of the Tracks area, by row, each playing
+	// one of Tracks.
+	ArrangeTracks  []ArrangeTrack
 	Sequences      []MIDISequence
 	Markers        []Marker
 	TempoChanges   []TempoChange
@@ -89,6 +92,7 @@ func (p *ProjectData) Refresh() {
 		Environment: findEnvironment(chunks), Transport: findTransport(chunks),
 	}
 	assignAudioUnits(p.Tracks, p.AudioUnits)
+	p.ArrangeTracks = findArrangeTrackRows(chunks, p.Tracks)
 	p.AudioPlacements = findAudioPlacements(chunks, p.AudioRegions)
 	assignRegionTracks(p.Sequences, p.AudioPlacements, p.Tracks)
 }

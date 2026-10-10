@@ -523,6 +523,30 @@ var edits = []edit{
 			return errors.New("the audio region at bar 4 is gone")
 		}, audio.Save()
 	}},
+	{"track-add", "tracks-region-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// As tracks-region-same-instrument: Inst 1 again below Inst 1, which
+		// moves Inst 3 and its region down a row.
+		_, err := p.DuplicateArrangeTrack(&p.ArrangeTracks[0])
+		return func(p logicx.ProjectData) error {
+			return arrangeCheck(p, []string{"Inst 1", "Inst 1", "Inst 2", "Inst 3", "Output 1-2"})
+		}, err
+	}},
+	{"track-delete", "tracks-region-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// As tracks-region-delete-middle: Inst 2's track goes, and Inst 3
+		// and its region move up a row.
+		return func(p logicx.ProjectData) error {
+			if err := arrangeCheck(p, []string{"Inst 1", "Inst 3", "Output 1-2"}); err != nil {
+				return err
+			}
+			// The strip stays in the mixer, without a track.
+			for _, o := range p.Environment {
+				if o.Name == "Inst 2" {
+					return nil
+				}
+			}
+			return errors.New("Inst 2 lost its environment object")
+		}, p.DeleteArrangeTrack(&p.ArrangeTracks[1])
+	}},
 	{"sample-rate", "mixer-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		t := p.Transport
 		if t == nil {
@@ -533,6 +557,20 @@ var edits = []edit{
 			return expect(p.Transport != nil && p.Transport.SampleRate == 96000, "transport %+v", p.Transport)
 		}, t.Save()
 	}},
+}
+
+// arrangeCheck checks p's arrange tracks against the names of the strips
+// they play, and that the region at bar 3 is still on Inst 3.
+func arrangeCheck(p logicx.ProjectData, want []string) error {
+	var got []string
+	for _, a := range p.ArrangeTracks {
+		got = append(got, a.Track)
+	}
+	if !slices.Equal(got, want) {
+		return fmt.Errorf("arrange tracks %q, want %q", got, want)
+	}
+	r := region(&p, "Inst 3")
+	return expect(r != nil && len(r.Notes) == 1, "region on Inst 3: %+v", r)
 }
 
 // region returns p's region on the named track, or nil when there is none.
