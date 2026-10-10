@@ -912,3 +912,19 @@ func TestProjectData_DecodesArrangeTracks(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectData_DecodesTrackNames(t *testing.T) {
+	for fixture, want := range map[string]map[string]string{
+		// An unused audio strip has no object of its own, so no track name.
+		"tracks-base.logicx": {"Inst 1": "Inst 1", "Audio 1": "", "Inst 4": "Click"},
+		"mixer.logicx":       {"Inst 1": "Deluxe Classic", "Aux 1": "Aux 1"},
+		"regions.logicx":     {"Audio 2": "Subsonic Boom FX 07", "Inst 7": ""},
+	} {
+		p := parseFixtureProject(t, fixture)
+		for _, track := range p.Tracks {
+			if name, ok := want[track.Name]; ok && track.TrackName != name {
+				t.Errorf("%s: %s has track name %q, want %q", fixture, track.Name, track.TrackName, name)
+			}
+		}
+	}
+}

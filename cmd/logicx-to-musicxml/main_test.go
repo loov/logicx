@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	encodingxml "encoding/xml"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -83,9 +85,25 @@ func TestMergeSequences(t *testing.T) {
 		{Name: "Trumpet", Notes: []logicx.MIDINote{{Pitch: 60}}},
 		{Name: "Bass", Notes: []logicx.MIDINote{{Pitch: 36}}},
 		{Name: "Trumpet", Notes: []logicx.MIDINote{{Pitch: 64}}, Chords: []logicx.Chord{{Name: "C"}}},
-	})
+	}, nil)
 	if len(merged) != 2 || len(merged[0].Notes) != 2 || merged[0].Notes[1].Pitch != 64 || len(merged[0].Chords) != 1 {
 		t.Fatalf("merged = %+v", merged)
+	}
+}
+
+func TestMergeSequences_GroupsByTrack(t *testing.T) {
+	merged := mergeSequences([]logicx.MIDISequence{
+		{Name: "lead", Track: "Inst 1", Notes: []logicx.MIDINote{{Pitch: 60}}},
+		{Name: "Piano", Track: "Inst 2", Notes: []logicx.MIDINote{{Pitch: 48}}},
+		{Name: "adlib", Track: "Inst 1", Notes: []logicx.MIDINote{{Pitch: 64}}},
+		{Name: "Piano", Track: "Strings", Notes: []logicx.MIDINote{{Pitch: 55}}},
+	}, []logicx.Track{{Name: "Inst 1", TrackName: "Vocals"}, {Name: "Inst 2", TrackName: "Piano"}})
+	var got []string
+	for _, part := range merged {
+		got = append(got, fmt.Sprintf("%s:%d", part.Name, len(part.Notes)))
+	}
+	if want := []string{"Vocals:2", "Piano:1", "Strings:1"}; !slices.Equal(got, want) {
+		t.Errorf("parts = %v, want %v", got, want)
 	}
 }
 
@@ -714,5 +732,66 @@ func TestWriteMusicXML_StaffNotesFollowTheProjectSpelling(t *testing.T) {
 	}
 	if xml := output.String(); !strings.Contains(xml, "<step>B</step>") || strings.Contains(xml, "<step>A</step>") {
 		t.Errorf("staff note is not spelled Bb:\n%s", xml)
+	}
+}
+
+// TestWriteMusicXML_ChannelsBecomeVoices checks that each MIDI channel of a
+// part is written as its own voice, even where the channels never overlap.
+func TestWriteMusicXML_ChannelsBecomeVoices(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{BPM: 120, TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{Sequences: []logicx.MIDISequence{{Name: "Piano", Notes: []logicx.MIDINote{
+			{Position: logicBarOneTick, Pitch: 72, Duration: 960, Channel: 2},
+			{Position: logicBarOneTick, Pitch: 48, Duration: 960, Channel: 1},
+			{Position: logicBarOneTick + 960, Pitch: 50, Duration: 960, Channel: 1},
+			{Position: logicBarOneTick + 960, Pitch: 52, Duration: 1_920, Channel: 1}, // overlaps the D
+		}}}},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative, options{realizeChords: true}); err != nil {
+		t.Fatal(err)
+	}
+	var score struct {
+		Parts []struct {
+			Measures []struct {
+				Notes []struct {
+					Rest   *struct{} `xml:"rest"`
+					Step   string    `xml:"pitch>step"`
+					Octave int       `xml:"pitch>octave"`
+					Voice  int       `xml:"voice"`
+				} `xml:"note"`
+			} `xml:"measure"`
+		} `xml:"part"`
+	}
+	if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, note := range score.Parts[0].Measures[0].Notes {
+		if note.Rest == nil {
+			got[fmt.Sprintf("%s%d", note.Step, note.Octave)] = note.Voice
+		}
+	}
+	// Channel 1 is voice 1, channel 2 voice 2, and the shorter of channel 1's
+	// overlapping notes goes after both.
+	want := map[string]int{"C3": 1, "D3": 3, "E3": 1, "C5": 2}
+	if !maps.Equal(got, want) {
+		t.Errorf("voices = %v, want %v", got, want)
+	}
+}
+
+// TestMarkTuplet_WholeBeatStaysPlain covers a note in one voice that fills a
+// beat where another voice plays triplets: it is not a tuplet of its own.
+func TestMarkTuplet_WholeBeatStaysPlain(t *testing.T) {
+	grid := beatGrid{beat: ticksPerQuarter, triplet: map[uint32]bool{0: true}}
+	whole := &xmlNote{Duration: ticksPerQuarter}
+	markTuplet(whole, grid, 0, false)
+	if whole.TimeModification != nil || whole.Notations != nil {
+		t.Errorf("whole beat marked as a tuplet: %+v", whole)
+	}
+	third := &xmlNote{Duration: ticksPerQuarter / 3}
+	markTuplet(third, grid, 0, false)
+	if third.TimeModification == nil {
+		t.Error("a third of the beat was not marked as a tuplet")
 	}
 }

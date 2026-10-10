@@ -95,7 +95,11 @@ type Track struct {
 	// from its 74th entry; see [Track.PaletteColor]. It is stored in the
 	// strip's environment object, and is zero when the strip has none.
 	Color uint8
-	Sends []Send
+	// TrackName is the name the Tracks area shows for the strip's track,
+	// held by its environment object; Name is the channel strip's own name.
+	// It is empty when the strip has no object. Save does not write it.
+	TrackName string
+	Sends     []Send
 	// Automation is the track's automation points, in time order, as placed
 	// in Logic; see [AutomationPoint.Save].
 	Automation []AutomationPoint
@@ -820,6 +824,13 @@ func findTracks(chunks []*Chunk) []Track {
 		if track.environment != nil {
 			track.Color = track.environment.Data[environmentColor]
 			track.color = track.Color
+			// A strip without an ID of its own finds an object it routes to,
+			// whose name is not its track's.
+			if strip, ok := environmentStrip(track.environment.Data); ok && strip == track.strip {
+				var name string
+				record.Decode(track.environment.Data, record.String16(environmentNameLength, &name))
+				track.TrackName = strings.TrimSpace(name)
+			}
 			if track.trak = traks[chunkSequenceID(track.environment).sequence]; track.trak != nil {
 				record.Decode(track.trak.Data, append(track.headerFields(), record.Bit(arrangeTrackFlags, 0x01, &track.RecordArm))...)
 			}

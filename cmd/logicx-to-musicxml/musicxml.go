@@ -91,7 +91,7 @@ func writeMusicXML(w io.Writer, alternative logicx.Alternative, opts options) er
 
 // restMeasure is a bar of silence, used to pad a part out to the score length.
 func restMeasure(number int, length uint32) xmlMeasure {
-	return xmlMeasure{Number: number, length: length, Items: measureItems(nil, length, beatGrid{})}
+	return xmlMeasure{Number: number, length: length, Items: measureItems(nil, length, beatGrid{}, 1)}
 }
 
 // scoreOrigin is the tick that bar one starts on: Logic's own bar one, unless
@@ -133,7 +133,7 @@ type scorePart struct {
 // voiced from their chords, and the project chord track either joins a part
 // that already plays it or becomes a part of its own.
 func scoreSequences(project logicx.ProjectData, opts options) []scorePart {
-	merged := mergeSequences(project.Sequences)
+	merged := mergeSequences(project.Sequences, project.Tracks)
 	sequences := make([]scorePart, len(merged))
 	for i, sequence := range merged {
 		sequence.Chords = quantizeChords(sequence.Chords, opts.quantizeChord)
@@ -164,16 +164,24 @@ func scoreSequences(project logicx.ProjectData, opts options) []scorePart {
 	return append(sequences, chords)
 }
 
-// mergeSequences combines the regions of a track into one part, keyed by name.
-func mergeSequences(sequences []logicx.MIDISequence) []logicx.MIDISequence {
+// mergeSequences combines the regions of a track into one part named after the
+// track as the Tracks area shows it. A region whose track is unknown is grouped
+// by its own name instead. Tracks are told apart by name, so two sharing one
+// merge.
+func mergeSequences(sequences []logicx.MIDISequence, tracks []logicx.Track) []logicx.MIDISequence {
+	trackNames := make(map[string]string)
+	for _, track := range tracks {
+		trackNames[track.Name] = cmp.Or(track.TrackName, track.Name)
+	}
 	indexes := make(map[string]int)
 	var merged []logicx.MIDISequence
 	for _, sequence := range sequences {
-		i, ok := indexes[sequence.Name]
+		name := cmp.Or(trackNames[sequence.Track], sequence.Track, sequence.Name)
+		i, ok := indexes[name]
 		if !ok {
 			i = len(merged)
-			indexes[sequence.Name] = i
-			merged = append(merged, logicx.MIDISequence{Name: sequence.Name})
+			indexes[name] = i
+			merged = append(merged, logicx.MIDISequence{Name: name, Track: sequence.Track})
 		}
 		merged[i].Notes = append(merged[i].Notes, sequence.Notes...)
 		merged[i].Chords = append(merged[i].Chords, sequence.Chords...)
@@ -513,6 +521,7 @@ type noteSegment struct {
 	ScoreSlurs         []logicx.ScoreSlur
 	TieStart, TieEnd   bool
 	Slash              bool
+	Channel            int // rank of the note's MIDI channel within the part
 	Voice              int
 }
 
@@ -636,6 +645,14 @@ func makePart(
 	if slash {
 		notes, triplets = slashNotes(sequence.Chords, measures), beatGrid{}
 	}
+	// Each MIDI channel in the part gets its own voice, numbered by channel.
+	var channels []uint8
+	for _, note := range notes {
+		if !slices.Contains(channels, note.Channel) {
+			channels = append(channels, note.Channel)
+		}
+	}
+	slices.Sort(channels)
 	var byMeasure [][]noteSegment
 	var gridByMeasure []beatGrid
 	for _, note := range notes {
@@ -676,7 +693,8 @@ func makePart(
 				ScoreArpeggios:     note.ScoreArpeggios,
 				ScoreSlurs:         note.ScoreSlurs,
 				TieStart:           !first && !slash, TieEnd: remaining > duration && !slash,
-				Slash: slash,
+				Slash:   slash,
+				Channel: slices.Index(channels, note.Channel),
 			})
 			for len(gridByMeasure) <= measure {
 				gridByMeasure = append(gridByMeasure, beatGrid{})
@@ -777,7 +795,7 @@ func makePart(
 			return cmp.Or(cmp.Compare(a.Start, b.Start),
 				cmp.Compare(b.Duration, a.Duration), cmp.Compare(a.Pitch, b.Pitch))
 		})
-		assignVoices(notes)
+		assignVoices(notes, max(len(channels), 1))
 		measure := xmlMeasure{Number: i + 1, length: measures.durations[i]}
 		if i == 0 {
 			mode := strings.ToLower(metadata.Mode)
@@ -817,7 +835,7 @@ func makePart(
 		if i < len(gridByMeasure) {
 			grid = gridByMeasure[i]
 		}
-		measure.Items = measureItems(notes, measures.durations[i], grid)
+		measure.Items = measureItems(notes, measures.durations[i], grid, max(len(channels), 1))
 		part.Measures = append(part.Measures, measure)
 	}
 	return part
@@ -1061,8 +1079,9 @@ func harmonyDegrees(chord logicx.Chord) []xmlHarmonyDegree {
 // measureItems turns the segments of one measure into note elements, moving
 // the MusicXML cursor forward or back between them. Segments that share a
 // start and a duration become one chord; each voice is written in turn, backing
-// the cursor up to the barline in between.
-func measureItems(notes []noteSegment, duration uint32, grid beatGrid) []xmlMeasureItem {
+// the cursor up to the barline in between. Voices up to channels are the
+// channels' own and get rests; voices beyond hold their overlapping notes.
+func measureItems(notes []noteSegment, duration uint32, grid beatGrid, channels int) []xmlMeasureItem {
 	voices := 0
 	for _, segment := range notes {
 		voices = max(voices, segment.Voice)
@@ -1092,7 +1111,7 @@ func measureItems(notes []noteSegment, duration uint32, grid beatGrid) []xmlMeas
 			chord := !first && segment.Start == previous.Start && segment.Duration == previous.Duration
 			if !chord {
 				if segment.Start > cursor {
-					items = append(items, restItems(cursor, segment.Start-cursor, voice, grid)...)
+					items = append(items, restItems(cursor, segment.Start-cursor, voice, channels, grid)...)
 				} else if segment.Start < cursor {
 					items = append(items, xmlMeasureItem{Backup: &xmlMove{Duration: cursor - segment.Start}})
 				}
@@ -1105,7 +1124,7 @@ func measureItems(notes []noteSegment, duration uint32, grid beatGrid) []xmlMeas
 			first = false
 		}
 		if !first && cursor < duration {
-			items = append(items, restItems(cursor, duration-cursor, voice, grid)...)
+			items = append(items, restItems(cursor, duration-cursor, voice, channels, grid)...)
 			cursor = duration
 		}
 	}
@@ -1113,10 +1132,10 @@ func measureItems(notes []noteSegment, duration uint32, grid beatGrid) []xmlMeas
 }
 
 // restItems fills a gap so the staff shows rests rather than blank space.
-// ponytail: only the first voice is filled; extra voices are sparse by nature
+// Only each channel's own voice is filled; overlap voices are sparse by nature
 // and a full rest chain in each would clutter the staff.
-func restItems(start, duration uint32, voice int, grid beatGrid) []xmlMeasureItem {
-	if voice != 1 {
+func restItems(start, duration uint32, voice, channels int, grid beatGrid) []xmlMeasureItem {
+	if voice > channels {
 		return []xmlMeasureItem{{Forward: &xmlMove{Duration: duration}}}
 	}
 	var items []xmlMeasureItem
@@ -1148,7 +1167,9 @@ func restItems(start, duration uint32, voice int, grid beatGrid) []xmlMeasureIte
 // the beat and closes on the last, and a chord note carries only the scaling.
 func markTuplet(note *xmlNote, grid beatGrid, start uint32, chord bool) {
 	beatStart, ok := grid.at(start)
-	if !ok || note.Duration == 0 {
+	// A note filling the whole beat, as another voice's triplets sound
+	// against it, is plain.
+	if !ok || note.Duration == 0 || note.Duration == grid.beat {
 		return
 	}
 	slot := grid.beat / 3
@@ -1190,25 +1211,41 @@ func noteTypeName(duration uint32) string {
 // assignVoices spreads overlapping notes across voices. A MusicXML voice is
 // monophonic apart from chords, and MuseScore refuses to import a measure whose
 // voice plays two notes at once. Notes must be sorted by start, longest first.
-func assignVoices(notes []noteSegment) {
-	var ends []uint32 // tick at which each voice becomes free again
-	for i := 0; i < len(notes); {
-		j := i
-		for j < len(notes) && notes[j].Start == notes[i].Start && notes[j].Duration == notes[i].Duration {
-			j++
+//
+// Channel rank r plays voice r+1; its overlapping notes take voices after the
+// last channel's, so a channel keeps its voice from measure to measure.
+func assignVoices(notes []noteSegment, channels int) {
+	extra := channels
+	for rank := range channels {
+		var ends []uint32 // tick at which each of the channel's voices is free
+		var voices []int  // the voice number of each
+		var previous *noteSegment
+		for i := range notes {
+			note := &notes[i]
+			if note.Channel != rank {
+				continue
+			}
+			if previous != nil && previous.Start == note.Start && previous.Duration == note.Duration {
+				note.Voice = previous.Voice
+				continue
+			}
+			voice := 0
+			for voice < len(ends) && ends[voice] > note.Start {
+				voice++
+			}
+			if voice == len(ends) {
+				ends = append(ends, 0)
+				if voice == 0 {
+					voices = append(voices, rank+1)
+				} else {
+					extra++
+					voices = append(voices, extra)
+				}
+			}
+			ends[voice] = note.Start + note.Duration
+			note.Voice = voices[voice]
+			previous = note
 		}
-		voice := 0
-		for voice < len(ends) && ends[voice] > notes[i].Start {
-			voice++
-		}
-		if voice == len(ends) {
-			ends = append(ends, 0)
-		}
-		ends[voice] = notes[i].Start + notes[i].Duration
-		for k := i; k < j; k++ {
-			notes[k].Voice = voice + 1
-		}
-		i = j
 	}
 }
 
