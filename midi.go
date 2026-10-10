@@ -73,18 +73,52 @@ type MIDISequence struct {
 	arrange map[string]arrangeTarget
 }
 
-// Quantize is a region's quantize setting, by Logic's code for it.
+// Quantize is a region's quantize setting, by Logic's code for it. Grids are
+// named by their note value, triplets by theirs: Quantize24 is 1/24, sixteenth
+// note triplets. The codes count up through Logic's menu; those marked
+// inferred lie between confirmed ones but were not seen.
 type Quantize int16
 
 const (
-	QuantizeOff       Quantize = 0
-	QuantizeQuarter   Quantize = -10
-	QuantizeEighth    Quantize = -8
-	Quantize12        Quantize = -7 // 1/12, eighth-note triplets
-	QuantizeSixteen   Quantize = -6
-	Quantize24        Quantize = -5 // 1/24, sixteenth-note triplets
-	QuantizeThirtyTwo Quantize = -4
-	Quantize16And24   Quantize = -15
+	QuantizeOff Quantize = 0
+
+	Quantize1  Quantize = -13
+	Quantize2  Quantize = -12
+	Quantize4  Quantize = -10
+	Quantize8  Quantize = -8
+	Quantize16 Quantize = -6
+	Quantize32 Quantize = -4
+	Quantize64 Quantize = -2
+
+	Quantize3   Quantize = -11
+	Quantize6   Quantize = -9 // inferred
+	Quantize12  Quantize = -7
+	Quantize24  Quantize = -5
+	Quantize48  Quantize = -3
+	Quantize96  Quantize = -1
+	Quantize192 Quantize = -34
+
+	QuantizeSwing16A Quantize = -15
+	QuantizeSwing16B Quantize = -16 // inferred
+	QuantizeSwing16C Quantize = -17 // inferred
+	QuantizeSwing16D Quantize = -18 // inferred
+	QuantizeSwing16E Quantize = -19 // inferred
+	QuantizeSwing16F Quantize = -20
+	QuantizeSwing8A  Quantize = -21
+	QuantizeSwing8B  Quantize = -22 // inferred
+	QuantizeSwing8C  Quantize = -23 // inferred
+	QuantizeSwing8D  Quantize = -24 // inferred
+	QuantizeSwing8E  Quantize = -25 // inferred
+	QuantizeSwing8F  Quantize = -26
+
+	QuantizeQuintuplet4 Quantize = -27 // 5-tuplet/4
+	QuantizeQuintuplet8 Quantize = -28 // 5-tuplet/8
+	QuantizeSeptuplet   Quantize = -29
+	QuantizeNonuplet    Quantize = -30
+
+	Quantize16And16Triplet Quantize = -32 // inferred
+	Quantize16And8Triplet  Quantize = -31
+	Quantize8And8Triplet   Quantize = -33
 )
 
 // arrangeTarget is where a region on a track is placed: the arrange track's

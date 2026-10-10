@@ -1265,8 +1265,8 @@ func TestMIDISequence_DecodesAnAlias(t *testing.T) {
 func TestMIDISequence_DecodesQuantize(t *testing.T) {
 	p := parseFixtureProject(t, "regions-more.logicx")
 	for track, want := range map[string]Quantize{
-		"Inst 1": QuantizeOff, "Inst 5": QuantizeEighth, "Inst 7": QuantizeQuarter, "Inst 8": QuantizeSixteen,
-		"Inst 9": QuantizeThirtyTwo, "Inst 10": Quantize12, "Inst 11": Quantize24, "Inst 12": Quantize16And24,
+		"Inst 1": QuantizeOff, "Inst 5": Quantize8, "Inst 7": Quantize4, "Inst 8": Quantize16,
+		"Inst 9": Quantize32, "Inst 10": Quantize12, "Inst 11": Quantize24, "Inst 12": QuantizeSwing16A,
 	} {
 		if got := regionOn(t, &p, track).Quantize; got != want {
 			t.Errorf("%s quantize = %d, want %d", track, got, want)
@@ -1276,6 +1276,31 @@ func TestMIDISequence_DecodesQuantize(t *testing.T) {
 		if a.Mute != (a.Track == "Audio 2") {
 			t.Errorf("%s mute = %v", a.Track, a.Mute)
 		}
+	}
+}
+
+func TestMIDISequence_DecodesEveryQuantize(t *testing.T) {
+	// Each region is named for the setting Logic's menu gave it.
+	p := parseFixtureProject(t, "regions-quantize.logicx")
+	want := map[string]Quantize{
+		"1/1": Quantize1, "1/2": Quantize2, "1/64": Quantize64,
+		"1/2t": Quantize3, "1/32t": Quantize48, "1/64t": Quantize96, "1/128t": Quantize192,
+		"1/16 swing a": QuantizeSwing16A, "1/16 swing f": QuantizeSwing16F,
+		"1/8 swing a": QuantizeSwing8A, "1/8 swing f": QuantizeSwing8F,
+		"5 tuplet /4": QuantizeQuintuplet4, "5 tuplet /8": QuantizeQuintuplet8,
+		"7 tuplet": QuantizeSeptuplet, "9 tuplet": QuantizeNonuplet,
+		"1/16 & 1/8 triplet": Quantize16And8Triplet, "1/8 & 1/8 triplet": Quantize8And8Triplet,
+	}
+	for _, s := range p.Sequences {
+		if q, ok := want[s.Name]; ok {
+			if s.Quantize != q {
+				t.Errorf("%s quantize = %d, want %d", s.Name, s.Quantize, q)
+			}
+			delete(want, s.Name)
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("regions missing: %v", want)
 	}
 }
 

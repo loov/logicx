@@ -416,7 +416,7 @@ var edits = []edit{
 		if r == nil || len(p.AudioPlacements) < 2 {
 			return nil, errors.New("no regions to move")
 		}
-		r.Track, r.Quantize = "Inst 6", logicx.QuantizeSixteen
+		r.Track, r.Quantize = "Inst 6", logicx.Quantize16
 		if err := r.Save(); err != nil {
 			return nil, err
 		}
@@ -429,7 +429,7 @@ var edits = []edit{
 					moved = &p.Sequences[i]
 				}
 			}
-			if moved == nil || moved.Quantize != logicx.QuantizeSixteen || moved.Position != 40320 {
+			if moved == nil || moved.Quantize != logicx.Quantize16 || moved.Position != 40320 {
 				return fmt.Errorf("Inst 4's region did not arrive on Inst 6: %+v", moved)
 			}
 			for _, a := range p.AudioPlacements {
