@@ -557,6 +557,42 @@ var edits = []edit{
 			return expect(p.Transport != nil && p.Transport.SampleRate == 96000, "transport %+v", p.Transport)
 		}, t.Save()
 	}},
+	{"control-edit", "midi-import-cc1-85", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		c := controls(*p)[0]
+		bend, err := c.Duplicate()
+		if err != nil {
+			return nil, err
+		}
+		bend.Kind, bend.Number, bend.Value = logicx.PitchBend, 0, 0x0abc
+		bend.SourcePosition, bend.Position = c.SourcePosition+1920, c.Position+1920
+		c.Number, c.Value = 11, 100
+		c.SourcePosition, c.Position = c.SourcePosition+960, c.Position+960
+		return func(p logicx.ProjectData) error {
+			got := controls(p)
+			return expect(len(got) == 2 &&
+				got[0].Kind == logicx.ControlChange && got[0].Number == 11 && got[0].Value == 100 && got[0].Position == c.Position &&
+				got[1].Kind == logicx.PitchBend && got[1].Value == 0x0abc && got[1].Position == bend.Position,
+				"controls %+v", got)
+		}, errors.Join(c.Save(), bend.Save())
+	}},
+	{"control-delete", "midi-import-cc1-85-twice", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		c := controls(*p)[0]
+		return func(p logicx.ProjectData) error {
+			got := controls(p)
+			return expect(len(got) == 1 && got[0].Value == 86, "controls %+v", got)
+		}, c.Delete()
+	}},
+}
+
+// controls lists every control message in p's regions, in region order.
+func controls(p logicx.ProjectData) []*logicx.MIDIControl {
+	var list []*logicx.MIDIControl
+	for i := range p.Sequences {
+		for j := range p.Sequences[i].Controls {
+			list = append(list, &p.Sequences[i].Controls[j])
+		}
+	}
+	return list
 }
 
 // arrangeCheck checks p's arrange tracks against the names of the strips

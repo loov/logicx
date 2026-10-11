@@ -99,9 +99,9 @@ func eventLayout(data []byte, automation bool) (string, []record.Field) {
 		}
 	}
 	if c, ok := decodeMIDIControl(data); ok {
-		var status uint8
+		var status, number uint8
 		var value uint32
-		return "control", c.fields(&status, &value)
+		return "control", c.fields(&status, &value, &number)
 	}
 	switch data[0] {
 	case eventTempo:

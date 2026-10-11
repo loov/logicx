@@ -66,6 +66,9 @@ func saveAll(t *testing.T, p *ProjectData) {
 		for j := range s.Chords {
 			add(s.Chords[j].Save)
 		}
+		for j := range s.Controls {
+			add(s.Controls[j].Save)
+		}
 		for j := range s.Notes {
 			n := &s.Notes[j]
 			add(n.Save)
@@ -1926,5 +1929,96 @@ func TestProjectData_ArrangeTrackRowCountReproducesLogic(t *testing.T) {
 	}
 	if g, w := count(p), count(parseFixtureProject(t, "tracks-region-same-instrument.logicx")); g != w {
 		t.Errorf("after an add, rows count %d, want %d", g, w)
+	}
+}
+
+// TestMIDIControl_SaveReproducesLogic changes the imported cc1-85 and
+// bend-1234 messages into others that were imported too: Save must write
+// what Logic wrote for those.
+func TestMIDIControl_SaveReproducesLogic(t *testing.T) {
+	control := func(p ProjectData) *MIDIControl {
+		for i := range p.Sequences {
+			if len(p.Sequences[i].Controls) > 0 {
+				return &p.Sequences[i].Controls[0]
+			}
+		}
+		t.Fatal("no control")
+		return nil
+	}
+	for _, test := range []struct {
+		from, to string
+		edit     func(c *MIDIControl)
+	}{
+		{"midi-import-cc1-85.logicx", "midi-import-cc1-127.logicx", func(c *MIDIControl) { c.Value = 127 }},
+		{"midi-import-cc1-127.logicx", "midi-import-cc1-85.logicx", func(c *MIDIControl) { c.Value = 85 }},
+		{"midi-import-cc1-85.logicx", "midi-import-cc1-85-ch2.logicx", func(c *MIDIControl) { c.Channel = 2 }},
+		{"midi-import-cc1-85.logicx", "midi-import-aftertouch-85.logicx", func(c *MIDIControl) { c.Kind, c.Number = ChannelPressure, 0 }},
+		{"midi-import-cc1-85.logicx", "midi-import-polypressure-60-85.logicx", func(c *MIDIControl) { c.Kind, c.Number = PolyPressure, 60 }},
+		{"midi-import-bend-1234.logicx", "midi-import-bend-max.logicx", func(c *MIDIControl) { c.Value = 0x3fff }},
+		{"midi-import-bend-max.logicx", "midi-import-bend-1234.logicx", func(c *MIDIControl) { c.Value = 0x1234 }},
+		{"midi-import-cc1-85.logicx", "midi-import-program-5.logicx", func(c *MIDIControl) { c.Kind, c.Number, c.Value = ProgramChange, 0, 5 }},
+	} {
+		c := control(parseFixtureProject(t, test.from))
+		test.edit(c)
+		if err := c.Save(); err != nil {
+			t.Fatalf("%s: %v", test.from, err)
+		}
+		want := control(parseFixtureProject(t, test.to)).Raw
+		if !slices.Equal(c.ref.event.Data, want) {
+			t.Errorf("%s edited as %s:\n got % x\nwant % x", test.from, test.to, c.ref.event.Data, want)
+		}
+	}
+
+	// A value of 86 is stored with its low six bits repeated, as Logic stored
+	// the second message it imported.
+	p := parseFixtureProject(t, "midi-import-cc1-85.logicx")
+	c := control(p)
+	c.Value = 86
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(c.ref.event.Data[controlValue:]); got != 0x56596596 {
+		t.Errorf("86 stored as %#x, want 0x56596596", got)
+	}
+}
+
+func TestMIDIControl_DuplicateAndDelete(t *testing.T) {
+	p := parseFixtureProject(t, "midi-import-cc1-85.logicx")
+	count := func() (n int) {
+		for _, s := range p.Sequences {
+			n += len(s.Controls)
+		}
+		return n
+	}
+	var c *MIDIControl
+	for i := range p.Sequences {
+		if len(p.Sequences[i].Controls) > 0 {
+			c = &p.Sequences[i].Controls[0]
+		}
+	}
+	copied, err := c.Duplicate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied.SourcePosition, copied.Position, copied.Value = c.SourcePosition+960, c.Position+960, 40
+	if err := copied.Save(); err != nil {
+		t.Fatal(err)
+	}
+	p.Refresh()
+	if count() != 2 {
+		t.Fatalf("after duplicate: %d controls", count())
+	}
+	for i := range p.Sequences {
+		for j := range p.Sequences[i].Controls {
+			if p.Sequences[i].Controls[j].Value == 40 {
+				if err := p.Sequences[i].Controls[j].Delete(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	p.Refresh()
+	if count() != 1 {
+		t.Errorf("after delete: %d controls", count())
 	}
 }
