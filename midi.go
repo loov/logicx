@@ -50,7 +50,12 @@ type MIDISequence struct {
 	// Track is the name of the track the region is on, or empty when it is
 	// not known. Save moves the region to another track that has an arrange
 	// track, unless other regions place its source too.
-	Track      string
+	Track string
+	// Row is the Tracks area row of the track the region is on, from 1 at
+	// the top as [ArrangeTrack.Row], or 0 when not known. It tells apart
+	// tracks that play the same channel strip, which share Track. Save
+	// ignores it; set Track to move the region.
+	Row        int
 	Notes      []MIDINote
 	Chords     []Chord
 	descriptor *Chunk
@@ -188,6 +193,7 @@ func (p *regionParams) linkFields() []record.Field {
 func (s *MIDISequence) decodeRegion() {
 	if s.link.event != nil {
 		s.trackObject = binary.LittleEndian.Uint32(s.link.event.Data[linkTrack:])
+		s.Row = int(binary.LittleEndian.Uint16(s.link.event.Data[linkRow:]))
 	}
 	data := s.descriptor.Data
 	tail, ok := sequenceTail(data)

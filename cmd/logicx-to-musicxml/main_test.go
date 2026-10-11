@@ -795,3 +795,35 @@ func TestMarkTuplet_WholeBeatStaysPlain(t *testing.T) {
 		t.Error("a third of the beat was not marked as a tuplet")
 	}
 }
+
+func TestMergeSequences_SameInstrumentTracksStayApart(t *testing.T) {
+	merged := mergeSequences([]logicx.MIDISequence{
+		{Name: "a", Track: "Inst 1", Row: 1, Notes: []logicx.MIDINote{{Pitch: 60}}},
+		{Name: "b", Track: "Inst 1", Row: 2, Notes: []logicx.MIDINote{{Pitch: 64}}},
+		{Name: "c", Track: "Inst 1", Row: 1, Notes: []logicx.MIDINote{{Pitch: 67}}},
+	}, []logicx.Track{{Name: "Inst 1", TrackName: "Piano"}})
+	var got []string
+	for _, part := range merged {
+		got = append(got, fmt.Sprintf("%s:%d", part.Name, len(part.Notes)))
+	}
+	if want := []string{"Piano:2", "Piano:1"}; !slices.Equal(got, want) {
+		t.Errorf("parts = %v, want %v", got, want)
+	}
+}
+
+func TestMergeSequences_NotesAsLogicPlaysThem(t *testing.T) {
+	merged := mergeSequences([]logicx.MIDISequence{
+		{Name: "up", Transpose: 12, Delay: -10, Notes: []logicx.MIDINote{
+			{Position: 100, Pitch: 60},
+			{Position: 200, Pitch: 62, Muted: true},
+			{Position: 5, Pitch: 120}, // transposed out of range
+		}},
+		{Name: "muted", Mute: true, Notes: []logicx.MIDINote{{Position: 100, Pitch: 60}}},
+	}, nil)
+	if len(merged) != 1 || len(merged[0].Notes) != 1 {
+		t.Fatalf("merged = %+v", merged)
+	}
+	if note := merged[0].Notes[0]; note.Pitch != 72 || note.Position != 90 {
+		t.Errorf("note = pitch %d at %d, want 72 at 90", note.Pitch, note.Position)
+	}
+}

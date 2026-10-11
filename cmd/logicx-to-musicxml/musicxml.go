@@ -165,28 +165,57 @@ func scoreSequences(project logicx.ProjectData, opts options) []scorePart {
 }
 
 // mergeSequences combines the regions of a track into one part named after the
-// track as the Tracks area shows it. A region whose track is unknown is grouped
-// by its own name instead. Tracks are told apart by name, so two sharing one
-// merge.
+// track as the Tracks area shows it, with each region's notes as Logic plays
+// them. Tracks are told apart by their row, so two playing the same channel
+// strip stay apart; a region without a row is grouped by its track's name, or
+// its own when that is unknown too.
 func mergeSequences(sequences []logicx.MIDISequence, tracks []logicx.Track) []logicx.MIDISequence {
 	trackNames := make(map[string]string)
 	for _, track := range tracks {
 		trackNames[track.Name] = cmp.Or(track.TrackName, track.Name)
 	}
-	indexes := make(map[string]int)
+	type partKey struct {
+		row  int
+		name string
+	}
+	indexes := make(map[partKey]int)
 	var merged []logicx.MIDISequence
 	for _, sequence := range sequences {
+		if sequence.Mute {
+			continue
+		}
 		name := cmp.Or(trackNames[sequence.Track], sequence.Track, sequence.Name)
-		i, ok := indexes[name]
+		key := partKey{row: sequence.Row}
+		if key.row == 0 {
+			key.name = name
+		}
+		i, ok := indexes[key]
 		if !ok {
 			i = len(merged)
-			indexes[name] = i
-			merged = append(merged, logicx.MIDISequence{Name: name, Track: sequence.Track})
+			indexes[key] = i
+			merged = append(merged, logicx.MIDISequence{Name: name, Track: sequence.Track, Row: sequence.Row})
 		}
-		merged[i].Notes = append(merged[i].Notes, sequence.Notes...)
+		merged[i].Notes = append(merged[i].Notes, playedNotes(sequence)...)
 		merged[i].Chords = append(merged[i].Chords, sequence.Chords...)
 	}
 	return merged
+}
+
+// playedNotes returns a region's notes as Logic plays them: muted notes
+// dropped, and the region's transposition and delay applied. A note moved out
+// of MIDI's pitch range does not sound, so it is dropped too.
+func playedNotes(sequence logicx.MIDISequence) []logicx.MIDINote {
+	var notes []logicx.MIDINote
+	for _, note := range sequence.Notes {
+		pitch := int(note.Pitch) + int(sequence.Transpose)
+		if note.Muted || pitch < 0 || pitch > 127 {
+			continue
+		}
+		note.Pitch = uint8(pitch)
+		note.Position = uint32(max(int64(note.Position)+int64(sequence.Delay), 0))
+		notes = append(notes, note)
+	}
+	return notes
 }
 
 // noteKey identifies a sounding note, used to compare chord voicings against

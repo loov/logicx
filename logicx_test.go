@@ -985,3 +985,10 @@ func TestMIDISequence_CroppedLoopRepeatsOnlyWhatItShows(t *testing.T) {
 		t.Errorf("looped %v: first pass %v, second %v", looped.Looped, first, second)
 	}
 }
+
+func TestMIDISequence_DecodesItsTrackRow(t *testing.T) {
+	p := parseFixtureProject(t, "tracks-region-same-instrument.logicx")
+	if len(p.Sequences) != 1 || p.Sequences[0].Row != 4 || p.ArrangeTracks[3].Track != p.Sequences[0].Track {
+		t.Errorf("region rows: %+v", mapSlice(p.Sequences, func(s MIDISequence) int { return s.Row }))
+	}
+}
