@@ -168,7 +168,8 @@ func scoreSequences(project logicx.ProjectData, opts options) []scorePart {
 // track as the Tracks area shows it, with each region's notes as Logic plays
 // them. Tracks are told apart by their row, so two playing the same channel
 // strip stay apart; a region without a row is grouped by its track's name, or
-// its own when that is unknown too.
+// its own when that is unknown too. Controller data joins the part of its
+// track, even from a region holding nothing else.
 func mergeSequences(sequences []logicx.MIDISequence, tracks []logicx.Track) []logicx.MIDISequence {
 	trackNames := make(map[string]string)
 	for _, track := range tracks {
@@ -178,18 +179,21 @@ func mergeSequences(sequences []logicx.MIDISequence, tracks []logicx.Track) []lo
 		row  int
 		name string
 	}
+	keyOf := func(sequence logicx.MIDISequence) (partKey, string) {
+		name := cmp.Or(trackNames[sequence.Track], sequence.Track, sequence.Name)
+		if sequence.Row != 0 {
+			return partKey{row: sequence.Row}, name
+		}
+		return partKey{name: name}, name
+	}
 	indexes := make(map[partKey]int)
 	var merged []logicx.MIDISequence
 	for _, sequence := range sequences {
-		// A region of controller data alone has nothing to print.
+		// A region of controller data alone has nothing to print by itself.
 		if sequence.Mute || len(sequence.Notes) == 0 && len(sequence.Chords) == 0 {
 			continue
 		}
-		name := cmp.Or(trackNames[sequence.Track], sequence.Track, sequence.Name)
-		key := partKey{row: sequence.Row}
-		if key.row == 0 {
-			key.name = name
-		}
+		key, name := keyOf(sequence)
 		i, ok := indexes[key]
 		if !ok {
 			i = len(merged)
@@ -199,7 +203,60 @@ func mergeSequences(sequences []logicx.MIDISequence, tracks []logicx.Track) []lo
 		merged[i].Notes = append(merged[i].Notes, playedNotes(sequence)...)
 		merged[i].Chords = append(merged[i].Chords, sequence.Chords...)
 	}
+	for _, sequence := range sequences {
+		key, _ := keyOf(sequence)
+		if i, ok := indexes[key]; ok && !sequence.Mute {
+			for _, control := range sequence.Controls {
+				control.Position = uint32(max(int64(control.Position)+int64(sequence.Delay), 0))
+				merged[i].Controls = append(merged[i].Controls, control)
+			}
+		}
+	}
 	return merged
+}
+
+// sustainPedal is the controller of the sustain pedal; it is down from 64.
+const sustainPedal = 64
+
+// pedalMarks turns a part's sustain pedal messages into pedal marks: a start
+// where it goes down and a stop where it comes up. A pedal released and
+// pressed again on the same grid position is one change mark. A continuous
+// pedal sends many values on either side of 64; only the crossings count.
+// Positions snap to grid when it is not zero.
+func pedalMarks(controls []logicx.MIDIControl, grid uint32) []pedalMark {
+	var pedal []logicx.MIDIControl
+	for _, c := range controls {
+		if c.Kind == logicx.ControlChange && c.Number == sustainPedal {
+			pedal = append(pedal, c)
+		}
+	}
+	slices.SortStableFunc(pedal, func(a, b logicx.MIDIControl) int { return cmp.Compare(a.Position, b.Position) })
+	var marks []pedalMark
+	down := false
+	for _, c := range pedal {
+		position := c.Position
+		if grid != 0 {
+			position = snap(uint64(position), grid)
+		}
+		switch on := c.Value >= sustainPedal; {
+		case on && !down:
+			if last := len(marks) - 1; last >= 0 && marks[last].kind == "stop" && marks[last].position == position {
+				marks[last].kind = "change"
+			} else {
+				marks = append(marks, pedalMark{position, "start"})
+			}
+		case !on && down:
+			marks = append(marks, pedalMark{position, "stop"})
+		}
+		down = c.Value >= sustainPedal
+	}
+	return marks
+}
+
+// pedalMark is one pedal mark at a project tick.
+type pedalMark struct {
+	position uint32
+	kind     string
 }
 
 // playedNotes returns a region's notes as Logic plays them: muted notes
@@ -780,6 +837,17 @@ func makePart(
 			Sound: &xmlSound{Tempo: tempo.BPM},
 		})
 	}
+	pedalMeasures := make(map[int][]xmlDirection)
+	for _, mark := range pedalMarks(sequence.Controls, opts.quantize) {
+		measure, offset := measures.locate(mark.position)
+		for len(byMeasure) <= measure {
+			byMeasure = append(byMeasure, nil)
+		}
+		pedalMeasures[measure] = append(pedalMeasures[measure], xmlDirection{
+			Placement: "below", Offset: &offset,
+			Type: xmlDirectionType{Pedal: &xmlPedal{Type: mark.kind, Line: "yes"}},
+		})
+	}
 	chordMeasures := make(map[int][]xmlHarmony)
 	for _, chord := range sequence.Chords {
 		if chord.Name == "" {
@@ -860,6 +928,7 @@ func makePart(
 		}
 		measure.Directions = append(measure.Directions, markerMeasures[i]...)
 		measure.Directions = append(measure.Directions, tempoMeasures[i]...)
+		measure.Directions = append(measure.Directions, pedalMeasures[i]...)
 		measure.Harmonies = append(measure.Harmonies, chordMeasures[i]...)
 		grid := beatGrid{}
 		if i < len(gridByMeasure) {
@@ -1531,6 +1600,13 @@ type xmlWords struct {
 type xmlDirectionType struct {
 	Metronome *xmlMetronome `xml:"metronome,omitempty"`
 	Words     *xmlWords     `xml:"words,omitempty"`
+	Pedal     *xmlPedal     `xml:"pedal,omitempty"`
+}
+
+// xmlPedal is a sustain pedal mark, drawn as a bracket line.
+type xmlPedal struct {
+	Type string `xml:"type,attr"`
+	Line string `xml:"line,attr,omitempty"`
 }
 
 // printedTempo rounds a tempo for the metronome mark above the staff. Logic

@@ -828,3 +828,70 @@ func TestMergeSequences_NotesAsLogicPlaysThem(t *testing.T) {
 		t.Errorf("note = pitch %d at %d, want 72 at 90", note.Pitch, note.Position)
 	}
 }
+
+func TestPedalMarks_StartChangeStop(t *testing.T) {
+	cc := func(position uint32, number uint8, value uint16) logicx.MIDIControl {
+		return logicx.MIDIControl{Kind: logicx.ControlChange, Position: position, Number: number, Value: value}
+	}
+	marks := pedalMarks([]logicx.MIDIControl{
+		cc(1000, 64, 0),   // up while up: nothing
+		cc(2000, 64, 127), // down
+		cc(2100, 64, 90),  // a continuous pedal, still down: nothing
+		cc(2500, 1, 127),  // modulation: ignored
+		cc(3000, 64, 20),  // up and down again within a grid step: change
+		cc(3050, 64, 110),
+		cc(4010, 64, 10), // up, snapped to 4080
+	}, 240)
+	want := []pedalMark{{1920, "start"}, {3120, "change"}, {4080, "stop"}}
+	if !slices.Equal(marks, want) {
+		t.Errorf("marks = %v, want %v", marks, want)
+	}
+}
+
+// TestWriteMusicXML_PedalFromItsOwnRegion covers sustain pedal recorded in a
+// region apart from the notes of its track: the marks join that track's part.
+func TestWriteMusicXML_PedalFromItsOwnRegion(t *testing.T) {
+	alternative := logicx.Alternative{
+		Metadata: logicx.Metadata{BPM: 120, TimeSignature: [2]uint64{4, 4}},
+		Project: logicx.ProjectData{Sequences: []logicx.MIDISequence{
+			{Name: "Piano", Track: "Inst 1", Row: 1, Notes: []logicx.MIDINote{{Position: logicBarOneTick, Pitch: 60, Duration: 3840}}},
+			{Name: "Pedal", Track: "Inst 1", Row: 1, Controls: []logicx.MIDIControl{
+				{Kind: logicx.ControlChange, Number: 64, Value: 127, Position: logicBarOneTick},
+				{Kind: logicx.ControlChange, Number: 64, Value: 0, Position: logicBarOneTick + 3840 + 1920},
+			}},
+		}},
+	}
+	var output bytes.Buffer
+	if err := writeMusicXML(&output, alternative, options{quantize: ticksPerQuarter / 4}); err != nil {
+		t.Fatal(err)
+	}
+	var score struct {
+		Parts []struct {
+			Measures []struct {
+				Directions []struct {
+					Pedal *struct {
+						Type string `xml:"type,attr"`
+					} `xml:"direction-type>pedal"`
+					Offset uint32 `xml:"offset"`
+				} `xml:"direction"`
+			} `xml:"measure"`
+		} `xml:"part"`
+	}
+	if err := encodingxml.Unmarshal(output.Bytes(), &score); err != nil {
+		t.Fatal(err)
+	}
+	if len(score.Parts) != 1 {
+		t.Fatalf("parts = %d, want the pedal on the piano's part", len(score.Parts))
+	}
+	var got []string
+	for i, measure := range score.Parts[0].Measures {
+		for _, d := range measure.Directions {
+			if d.Pedal != nil {
+				got = append(got, fmt.Sprintf("%d:%s@%d", i+1, d.Pedal.Type, d.Offset))
+			}
+		}
+	}
+	if want := []string{"1:start@0", "2:stop@1920"}; !slices.Equal(got, want) {
+		t.Errorf("pedal marks %v, want %v", got, want)
+	}
+}

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"slices"
 	"testing"
 
 	"github.com/loov/logicx"
@@ -111,4 +112,20 @@ func itoa(value uint32) string {
 		digits = append([]byte{byte('0' + value%10)}, digits...)
 	}
 	return string(digits)
+}
+
+func TestControlMessage(t *testing.T) {
+	for _, test := range []struct {
+		control logicx.MIDIControl
+		want    []byte
+	}{
+		{logicx.MIDIControl{Kind: logicx.ControlChange, Number: 64, Value: 127}, []byte{0xb2, 64, 127}},
+		{logicx.MIDIControl{Kind: logicx.PitchBend, Value: 0x1234}, []byte{0xe2, 0x34, 0x24}},
+		{logicx.MIDIControl{Kind: logicx.ProgramChange, Value: 5}, []byte{0xc2, 5}},
+		{logicx.MIDIControl{Kind: logicx.PolyPressure, Number: 60, Value: 85}, []byte{0xa2, 60, 85}},
+	} {
+		if got := controlMessage(test.control, 2); !slices.Equal(got, test.want) {
+			t.Errorf("%+v: % x, want % x", test.control, got, test.want)
+		}
+	}
 }

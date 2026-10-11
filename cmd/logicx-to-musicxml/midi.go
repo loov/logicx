@@ -31,7 +31,8 @@ func writeMIDI(w io.Writer, alternative logicx.Alternative) error {
 	return smf.Write(w, tracks)
 }
 
-// noteTrack holds one part's notes, named so the importer can label the staff.
+// noteTrack holds one part's notes and controllers, named so the importer can
+// label the staff.
 func noteTrack(sequence logicx.MIDISequence, origin uint32, channel uint8) []byte {
 	events := []smf.Event{smf.Meta(0, 0x03, []byte(sequence.Name))}
 	for _, note := range sequence.Notes {
@@ -46,5 +47,26 @@ func noteTrack(sequence logicx.MIDISequence, origin uint32, channel uint8) []byt
 			smf.Event{Tick: start, Order: 1, Data: []byte{0x90 | channel, note.Pitch, midiVelocity}},
 			smf.Event{Tick: end, Order: 0, Data: []byte{0x80 | channel, note.Pitch, 0}})
 	}
+	for _, control := range sequence.Controls {
+		if data := controlMessage(control, channel); data != nil {
+			// Controllers sort before a note-on at the same tick, so a pedal
+			// pressed with a note holds it.
+			events = append(events, smf.Event{Tick: smf.Relative(control.Position, origin), Order: 0, Data: data})
+		}
+	}
 	return smf.Assemble(events)
+}
+
+// controlMessage is the MIDI message of a control on channel.
+func controlMessage(c logicx.MIDIControl, channel uint8) []byte {
+	switch c.Kind {
+	case logicx.ControlChange, logicx.PolyPressure:
+		return []byte{uint8(c.Kind) | channel, c.Number & 0x7f, uint8(min(c.Value, 127))}
+	case logicx.ProgramChange, logicx.ChannelPressure:
+		return []byte{uint8(c.Kind) | channel, uint8(min(c.Value, 127))}
+	case logicx.PitchBend:
+		v := min(c.Value, 1<<14-1)
+		return []byte{uint8(c.Kind) | channel, uint8(v & 0x7f), uint8(v >> 7)}
+	}
+	return nil
 }
