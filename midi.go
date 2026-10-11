@@ -685,7 +685,9 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 		repeatShift := int64(repeat) * int64(s.duration)
 		for _, note := range s.notes {
 			base := int64(note.Position) + baseShift
-			if looped && base >= int64(position)+int64(s.duration) {
+			// A loop repeats only what the region shows: not what its crop
+			// hides before it, nor what lies past its length.
+			if looped && (base < int64(position) || base >= int64(position)+int64(s.duration)) {
 				continue
 			}
 			p := base + repeatShift
@@ -700,7 +702,7 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 		}
 		for _, chord := range s.chords {
 			base := int64(chord.Position) + baseShift
-			if looped && base >= int64(position)+int64(s.duration) {
+			if looped && (base < int64(position) || base >= int64(position)+int64(s.duration)) {
 				continue
 			}
 			p := base + repeatShift

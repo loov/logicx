@@ -953,3 +953,35 @@ func TestMIDISequence_CroppedRegionStartsInsideItsSource(t *testing.T) {
 		t.Errorf("cropped region starts with %+v, want note 2 (pitch %d) at %d", after.Notes[:min(1, len(after.Notes))], before.Notes[1].Pitch, before.Position)
 	}
 }
+
+// TestMIDISequence_CroppedLoopRepeatsOnlyWhatItShows covers a cropped region
+// that loops: every repeat plays the notes the region shows, and none of the
+// notes its crop hides.
+func TestMIDISequence_CroppedLoopRepeatsOnlyWhatItShows(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	region := p.Sequences[0]
+	crop := region.Notes[1].Position - region.Position
+	data := region.descriptor.Data
+	tail, _ := sequenceTail(data)
+	binary.LittleEndian.PutUint32(data[tail+sequenceCrop:], crop)
+	// Loop it twice over.
+	binary.LittleEndian.PutUint32(region.link.event.Data[28:], 2*region.SourceDuration)
+
+	var looped MIDISequence
+	for _, s := range findMIDISequences(p.Chunks) {
+		if s.SequenceID == region.SequenceID && s.Position == region.Position {
+			looped = s
+		}
+	}
+	var first, second []uint8
+	for _, note := range looped.Notes {
+		if note.Position < region.Position+region.SourceDuration {
+			first = append(first, note.Pitch)
+		} else {
+			second = append(second, note.Pitch)
+		}
+	}
+	if !looped.Looped || len(first) == 0 || !slices.Equal(first, second) {
+		t.Errorf("looped %v: first pass %v, second %v", looped.Looped, first, second)
+	}
+}
