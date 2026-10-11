@@ -55,8 +55,11 @@ type MIDISequence struct {
 	// the top as [ArrangeTrack.Row], or 0 when not known. It tells apart
 	// tracks that play the same channel strip, which share Track. Save
 	// ignores it; set Track to move the region.
-	Row        int
-	Notes      []MIDINote
+	Row   int
+	Notes []MIDINote
+	// Controls are the region's control changes, pitch bends, pressure and
+	// program changes, placed as its notes are.
+	Controls   []MIDIControl
 	Chords     []Chord
 	descriptor *Chunk
 	// name is Name as decoded, so that Save writes it only when changed.
@@ -465,6 +468,7 @@ type sequenceSource struct {
 	positionOffset int32
 	notes          []MIDINote
 	chords         []Chord
+	controls       []MIDIControl
 }
 
 // findMIDISequences pairs event sequences with their descriptors, then places
@@ -496,13 +500,14 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 		}
 		notes := findMIDINotes(chunk)
 		chords := decodeChordEvents(chunk)
-		if len(notes) == 0 && len(chords) == 0 {
+		controls := findMIDIControls(chunk)
+		if len(notes) == 0 && len(chords) == 0 && len(controls) == 0 {
 			continue
 		}
 		s := sequenceSource{
 			id: id, descriptor: descriptor, name: sequenceName(descriptor.Data), chunkOffset: chunk.Offset,
 			duration: sequenceDuration(descriptor.Data), positionOffset: sequenceShift(descriptor.Data),
-			notes: notes, chords: chords,
+			notes: notes, chords: chords, controls: controls,
 		}
 		sources[id] = s
 		ordered = append(ordered, s)
@@ -562,7 +567,7 @@ func findMIDISequences(chunks []*Chunk) []MIDISequence {
 		inferChordDurationsUntil(s.chords, 0)
 		sequences = append(sequences, MIDISequence{
 			Name: s.name, ChunkOffset: s.chunkOffset, SequenceID: s.id.sequence,
-			Duration: s.duration, SourceDuration: s.duration, Notes: s.notes, Chords: s.chords,
+			Duration: s.duration, SourceDuration: s.duration, Notes: s.notes, Chords: s.chords, Controls: s.controls,
 			descriptor: s.descriptor, name: s.name,
 		})
 		sequences[len(sequences)-1].decodeRegion()
@@ -687,36 +692,44 @@ func materializeRegion(s sequenceSource, link regionLink) (MIDISequence, bool) {
 		descriptor: s.descriptor, name: s.name, link: link.ref, linkDuration: link.duration, position: position,
 	}
 	for repeat := uint32(0); repeat < repeats; repeat++ {
-		baseShift := int64(s.positionOffset)
 		repeatShift := int64(repeat) * int64(s.duration)
-		for _, note := range s.notes {
-			base := int64(note.Position) + baseShift
+		// place returns where an event of the source plays in this repeat,
+		// and whether it plays at all.
+		place := func(source uint32) (uint32, bool) {
+			base := int64(source) + int64(s.positionOffset)
 			// A loop repeats only what the region shows: not what its crop
 			// hides before it, nor what lies past its length.
 			if looped && (base < int64(position) || base >= int64(position)+int64(s.duration)) {
-				continue
+				return 0, false
 			}
 			p := base + repeatShift
 			if p < int64(position) || p < 0 || uint64(p) >= end || p > math.MaxUint32 {
+				return 0, false
+			}
+			return uint32(p), true
+		}
+		for _, note := range s.notes {
+			p, ok := place(note.Position)
+			if !ok {
 				continue
 			}
-			note.Position = uint32(p)
+			note.Position = p
 			if uint64(note.Position)+uint64(note.Duration) > end {
 				note.Duration = uint32(end - uint64(note.Position))
 			}
 			sequence.Notes = append(sequence.Notes, note)
 		}
 		for _, chord := range s.chords {
-			base := int64(chord.Position) + baseShift
-			if looped && (base < int64(position) || base >= int64(position)+int64(s.duration)) {
-				continue
+			if p, ok := place(chord.Position); ok {
+				chord.Position = p
+				sequence.Chords = append(sequence.Chords, chord)
 			}
-			p := base + repeatShift
-			if p < int64(position) || p < 0 || uint64(p) >= end || p > math.MaxUint32 {
-				continue
+		}
+		for _, control := range s.controls {
+			if p, ok := place(control.Position); ok {
+				control.Position = p
+				sequence.Controls = append(sequence.Controls, control)
 			}
-			chord.Position = uint32(p)
-			sequence.Chords = append(sequence.Chords, chord)
 		}
 	}
 	inferChordDurationsUntil(sequence.Chords, uint32(end))

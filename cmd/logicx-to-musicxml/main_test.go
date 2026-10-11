@@ -819,6 +819,7 @@ func TestMergeSequences_NotesAsLogicPlaysThem(t *testing.T) {
 			{Position: 5, Pitch: 120}, // transposed out of range
 		}},
 		{Name: "muted", Mute: true, Notes: []logicx.MIDINote{{Position: 100, Pitch: 60}}},
+		{Name: "pedal only", Controls: []logicx.MIDIControl{{Kind: logicx.ControlChange, Number: 64, Value: 127}}},
 	}, nil)
 	if len(merged) != 1 || len(merged[0].Notes) != 1 {
 		t.Fatalf("merged = %+v", merged)

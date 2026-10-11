@@ -992,3 +992,40 @@ func TestMIDISequence_DecodesItsTrackRow(t *testing.T) {
 		t.Errorf("region rows: %+v", mapSlice(p.Sequences, func(s MIDISequence) int { return s.Row }))
 	}
 }
+
+// TestMIDIControl_DecodesImportedMessages covers MIDI files holding one message
+// each at bar 2, imported into Logic. A 7-bit value fills the bits below it as
+// MIDI 2.0 scales values up; pitch bend's 14 bits are stored as they are.
+func TestMIDIControl_DecodesImportedMessages(t *testing.T) {
+	const bar2 = 42240
+	type want struct {
+		kind     MIDIControlKind
+		channel  uint8
+		position uint32
+		number   uint8
+		value    uint16
+		stored   uint32
+	}
+	for fixture, wants := range map[string][]want{
+		"midi-import-cc1-85.logicx":             {{ControlChange, 1, bar2, 1, 85, 0x55555555}},
+		"midi-import-cc1-127.logicx":            {{ControlChange, 1, bar2, 1, 127, 0x7fffffff}},
+		"midi-import-cc1-85-ch2.logicx":         {{ControlChange, 2, bar2, 1, 85, 0x55555555}},
+		"midi-import-cc1-85-twice.logicx":       {{ControlChange, 1, bar2, 1, 85, 0x55555555}, {ControlChange, 1, bar2 + 1920, 1, 86, 0x56596596}},
+		"midi-import-bend-1234.logicx":          {{PitchBend, 1, bar2, 0, 0x1234, 0x24680000}},
+		"midi-import-bend-max.logicx":           {{PitchBend, 1, bar2, 0, 0x3fff, 0x7fffffff}},
+		"midi-import-aftertouch-85.logicx":      {{ChannelPressure, 1, bar2, 0, 85, 0x55555555}},
+		"midi-import-polypressure-60-85.logicx": {{PolyPressure, 1, bar2, 60, 85, 0x55555555}},
+		"midi-import-program-5.logicx":          {{ProgramChange, 1, bar2, 0, 5, 0x05000000}},
+	} {
+		p := parseFixtureProject(t, fixture)
+		var got []want
+		for _, s := range p.Sequences {
+			for _, c := range s.Controls {
+				got = append(got, want{c.Kind, c.Channel, c.Position, c.Number, c.Value, binary.LittleEndian.Uint32(c.Raw[controlValue:])})
+			}
+		}
+		if !slices.Equal(got, wants) {
+			t.Errorf("%s: controls %+v, want %+v", fixture, got, wants)
+		}
+	}
+}

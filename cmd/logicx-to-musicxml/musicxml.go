@@ -181,7 +181,8 @@ func mergeSequences(sequences []logicx.MIDISequence, tracks []logicx.Track) []lo
 	indexes := make(map[partKey]int)
 	var merged []logicx.MIDISequence
 	for _, sequence := range sequences {
-		if sequence.Mute {
+		// A region of controller data alone has nothing to print.
+		if sequence.Mute || len(sequence.Notes) == 0 && len(sequence.Chords) == 0 {
 			continue
 		}
 		name := cmp.Or(trackNames[sequence.Track], sequence.Track, sequence.Name)

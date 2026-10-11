@@ -4,6 +4,7 @@ package logicx
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/loov/logicx/internal/record"
@@ -44,6 +45,12 @@ func (p *ProjectData) Unknown() []UnknownRecord {
 		}
 		records = append(records, r)
 	}
+	automation := make(map[chordSequenceID]bool)
+	for _, chunk := range p.Chunks {
+		if chunk.Type == "MSeq" && sequenceName(chunk.Data) == automationSequence {
+			automation[chunkSequenceID(chunk)] = true
+		}
+	}
 	for _, chunk := range p.Chunks {
 		if chunk.Events == nil {
 			kind, fields := chunkLayout(chunk)
@@ -51,7 +58,7 @@ func (p *ProjectData) Unknown() []UnknownRecord {
 			continue
 		}
 		for _, event := range chunk.Events {
-			kind, fields := eventLayout(event.Data)
+			kind, fields := eventLayout(event.Data, automation[chunkSequenceID(chunk)])
 			// The continuation byte of each atom after the first is structure.
 			for offset := atomSize; offset < len(event.Data); offset += atomSize {
 				fields = append(fields, record.Copy(offset+7, make([]byte, 1)))
@@ -63,8 +70,22 @@ func (p *ProjectData) Unknown() []UnknownRecord {
 }
 
 // eventLayout names an event record and returns its layout, trying the
-// decoders this package has for its type.
-func eventLayout(data []byte) (string, []record.Field) {
+// decoders this package has for its type. Automation events are told by the
+// sequence holding them, as their types overlap others.
+func eventLayout(data []byte, automation bool) (string, []record.Field) {
+	if base := data[0] &^ maxAutomationSlot; automation && (base == eventAutomation || base == eventMIDIFXAutomation) && len(data) >= atomSize {
+		var a AutomationPoint
+		var eventType, parameter uint8
+		var sample bool
+		fields := append(a.fields(&eventType, &parameter), record.Bit(15, automationSample, &sample))
+		if len(data) >= 2*atomSize && data[atomSize+7] == automationCurveAtom {
+			fields = append(fields, record.Uint8(automationCurve, new(uint8)))
+		}
+		if data[15]&automationSample != 0 {
+			return "automation sample", fields
+		}
+		return "automation point", fields
+	}
 	if isNote(data[0]) {
 		if n, ok := decodeMIDINote(data); ok {
 			var status, release uint8
@@ -76,6 +97,11 @@ func eventLayout(data []byte) (string, []record.Field) {
 			}
 			return "note", fields
 		}
+	}
+	if c, ok := decodeMIDIControl(data); ok {
+		var status uint8
+		var value uint32
+		return "control", c.fields(&status, &value)
 	}
 	switch data[0] {
 	case eventTempo:
@@ -108,7 +134,18 @@ func eventLayout(data []byte) (string, []record.Field) {
 			return "chord link", l.fields()
 		}
 		if l, ok := decodeRegionLink(data); ok {
-			return "region link", l.fields()
+			var p regionParams
+			return "region link", append(append(l.fields(), p.linkFields()...),
+				record.Uint32LE(linkTrack, new(uint32)), record.Uint16LE(linkRow, new(uint16)))
+		}
+	case eventAudioRegion:
+		var a AudioPlacement
+		var position, loop uint32
+		var gain uint8
+		var key audioRegionKey
+		fields := append(a.fields(&position, &gain, &loop, &key), record.Uint32LE(linkTrack, new(uint32)))
+		if len(data) >= audioPlacementMinimum && record.Decode(data, fields...) {
+			return "audio placement", fields
 		}
 	case eventScore:
 		if l, ok := decodeLyric(data); ok {
@@ -184,15 +221,26 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 	case channelStripChunk:
 		if isChannelStrip(chunk) && len(d) >= channelStripRecord+channelStripRecordSize {
 			descriptor := channelStripRecord + 16
-			return "channel strip", []record.Field{
+			fields := []record.Field{
 				record.CString(channelStripName, channelStripNameSize, new(string)),
 				record.Uint8(channelStripKind, new(uint8)),
 				// Whether the strip is active is read from these descriptor bytes.
 				record.Uint8(descriptor+2, new(uint8)),
 				record.Uint8(descriptor+4, new(uint8)),
 			}
+			if len(d) >= channelStripMixerEnd {
+				var t Track
+				fields = append(append(fields, t.mixerFields(new(uint8), new(uint8))...),
+					record.Uint16LE(channelStripOutput, new(uint16)), record.Uint16LE(channelStripInput, new(uint16)))
+			}
+			return "channel strip", fields
 		}
 	case pluginChunk:
+		if bytes.Equal(chunk.Header[4:8], pluginVariant) && len(d) >= sendMinimum && binary.LittleEndian.Uint16(d[pluginChainOffset:]) == chainSend {
+			var s Send
+			return "send", append(s.fields(new(uint8), new(uint8), new(bool)),
+				record.Uint16LE(pluginChainOffset, new(uint16)), record.Uint8(sendIndex, new(uint8)), record.Uint8(sendBus, new(uint8)))
+		}
 		if bytes.Equal(chunk.Header[4:8], pluginVariant) && len(d) >= pluginRecordSize {
 			return "plug-in", []record.Field{
 				record.Uint16LE(pluginChainOffset, new(uint16)),
@@ -211,11 +259,32 @@ func chunkLayout(chunk *Chunk) (string, []record.Field) {
 			fields = append(fields, record.Uint32LE(len(d)-sequenceOffsetTail, new(uint32)))
 		}
 		fields = append(fields, record.String16(sequenceNameLength, new(string)))
+		if tail, ok := sequenceTail(d); ok {
+			if len(d)-tail == sequenceParameterTail {
+				var p regionParams
+				fields = append(fields, p.descriptorFields(tail)...)
+				fields = append(fields, record.Uint32LE(tail+sequenceTrack, new(uint32)))
+			}
+			if tail+sequenceCrop+4 <= len(d)-sequenceOffsetTail {
+				fields = append(fields, record.Uint32LE(tail+sequenceCrop, new(uint32)))
+			}
+		}
 		return "sequence", fields
 	case songChunk:
 		if len(d) >= songMinimum {
 			var t Transport
 			return "song", t.fields()
+		}
+	case "Trak":
+		if len(d) >= arrangeTrackSelectedMinimum {
+			var t Track
+			return "arrange track", append(t.headerFields(),
+				record.Bit(arrangeTrackFlags, 0x01, new(bool)),
+				record.Uint8(arrangeTrackKind, new(uint8)),
+				record.Uint32LE(arrangeTrackEnvironment, new(uint32)),
+				record.Copy(arrangeTrackID, make([]byte, 16)),
+				record.Bit(arrangeTrackSelected, 0x20, new(bool)),
+				record.Bit(arrangeTrackSelectedAlso, 0x40, new(bool)))
 		}
 	case "TxSq":
 		if start := bytes.Index(d, []byte(`{\rtf`)); start >= 0 {
