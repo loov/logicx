@@ -613,6 +613,41 @@ var edits = []edit{
 				"regions %q row %d (%d notes), %q row %d at %d (%+v)", a.Name, a.Row, len(a.Notes), b.Name, b.Row, b.Position, b.Notes)
 		}, errors.Join(c.Save(), n.Save(), added.Save())
 	}},
+	{"track-new", "regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// As regions-more's Inst 7: a new track below Inst 6 on a spare
+		// strip of its own, named Viola, holding a copy of Inst 6's region.
+		if _, err := p.AddTrack(track(p, "Inst 6"), "Viola"); err != nil {
+			return nil, err
+		}
+		p.Refresh()
+		r := region(p, "Inst 6")
+		c, err := p.CopyRegion(r)
+		if err != nil {
+			return nil, err
+		}
+		c.Track = "Inst 7"
+		return func(p logicx.ProjectData) error {
+			v := track(&p, "Inst 7")
+			if v.TrackName != "Viola" || v.Instrument == nil {
+				return fmt.Errorf("Inst 7 is %q with instrument %v", v.TrackName, v.Instrument)
+			}
+			return expect(region(&p, "Inst 7") != nil && track(&p, "Inst 6").TrackName == "Deluxe Classic", "no region on Inst 7")
+		}, c.Save()
+	}},
+	{"track-new-strip", "chord-regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// No spare strip is left: the new track's strip takes the click's
+		// place, and the click's strip moves to Inst 4.
+		if _, err := p.AddTrack(track(p, "Inst 2"), "Cello"); err != nil {
+			return nil, err
+		}
+		return func(p logicx.ProjectData) error {
+			c, click := track(&p, "Inst 3"), track(&p, "Inst 4")
+			if c.TrackName != "Cello" || c.Instrument == nil {
+				return fmt.Errorf("Inst 3 is %q with instrument %v", c.TrackName, c.Instrument)
+			}
+			return expect(click.TrackName == "Click" && click.Instrument != nil, "Inst 4 is %q", click.TrackName)
+		}, nil
+	}},
 	{"region-delete", "regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
 		count := len(p.Sequences)
 		r := region(p, "Inst 2")

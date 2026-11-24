@@ -97,7 +97,8 @@ type Track struct {
 	Color uint8
 	// TrackName is the name the Tracks area shows for the strip's track,
 	// held by its environment object; Name is the channel strip's own name.
-	// It is empty when the strip has no object. Save does not write it.
+	// It is empty when the strip has no object of its own; Save writes it
+	// when it was changed.
 	TrackName string
 	Sends     []Send
 	// Automation is the track's automation points, in time order, as placed
@@ -126,6 +127,7 @@ type Track struct {
 	// name, color, output and input are as decoded, so that Save writes
 	// them only when they were changed.
 	name          string
+	trackName     string
 	color         uint8
 	output, input int16
 	routes        *routes
@@ -830,6 +832,7 @@ func findTracks(chunks []*Chunk) []Track {
 				var name string
 				record.Decode(track.environment.Data, record.String16(environmentNameLength, &name))
 				track.TrackName = strings.TrimSpace(name)
+				track.trackName = track.TrackName
 			}
 			if track.trak = traks[chunkSequenceID(track.environment).sequence]; track.trak != nil {
 				record.Decode(track.trak.Data, append(track.headerFields(), record.Bit(arrangeTrackFlags, 0x01, &track.RecordArm))...)
@@ -909,6 +912,16 @@ func (t *Track) Save() error {
 			return fmt.Errorf("logicx: track %q: color %d out of range", t.Name, t.Color)
 		}
 		t.environment.Data[environmentColor] = t.Color
+	}
+	if t.TrackName != t.trackName {
+		if t.environment == nil || t.trackName == "" {
+			return fmt.Errorf("logicx: track %q has no track name to change", t.Name)
+		}
+		env, err := renameEnvironment(t.environment.Data, t.TrackName)
+		if err != nil {
+			return err
+		}
+		t.environment.Data, t.trackName = env, t.TrackName
 	}
 	if t.trak != nil {
 		trak, err := record.Encode(t.trak.Data, t.headerFields()...)

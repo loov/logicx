@@ -100,3 +100,23 @@ func TestChord_SaveMovesItsGroup(t *testing.T) {
 		t.Errorf("group = %+v", group)
 	}
 }
+
+func TestProjectData_CopyRegionOfAnAlias(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	alias := regionOn(t, &p, "Inst 6")
+	if !alias.Alias {
+		t.Fatal("Inst 6's region is not an alias")
+	}
+	copied, err := p.CopyRegion(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied.Alias || copied.Position != alias.Position || len(copied.Notes) != len(alias.Notes) {
+		t.Fatalf("copy alias %v at %d with %d notes, want %d at %d", copied.Alias, copied.Position, len(copied.Notes), len(alias.Notes), alias.Position)
+	}
+	for i := range alias.Notes {
+		if copied.Notes[i].Position != alias.Notes[i].Position || copied.Notes[i].Pitch != alias.Notes[i].Pitch {
+			t.Errorf("note %d: %d@%d, want %d@%d", i, copied.Notes[i].Pitch, copied.Notes[i].Position, alias.Notes[i].Pitch, alias.Notes[i].Position)
+		}
+	}
+}

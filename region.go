@@ -35,7 +35,14 @@ func (p *ProjectData) CopyRegion(s *MIDISequence) (MIDISequence, error) {
 	if err := s.link.check("region"); err != nil {
 		return MIDISequence{}, err
 	}
-	id, err := p.copySequence(chunkSequenceID(s.descriptor))
+	// An alias's own source holds no events; the copy takes its placement
+	// and a copy of the events it plays.
+	own := chunkSequenceID(s.descriptor)
+	events := own
+	if s.Alias {
+		events.sequence = binary.LittleEndian.Uint32(s.link.event.Data[8:])
+	}
+	id, err := p.copySequence(own, events)
 	if err != nil {
 		return MIDISequence{}, fmt.Errorf("logicx: region %q: %w", s.Name, err)
 	}
@@ -76,30 +83,37 @@ func (p *ProjectData) DeleteRegion(s *MIDISequence) error {
 	return nil
 }
 
-// copySequence copies every chunk numbered id — a source's descriptor, its
-// event sequence and the track chunk beside them — to a new sequence number
-// in the same group, after the last of them, and returns the number. The copy
-// gets a tag no other sequence has.
-func (p *ProjectData) copySequence(id chordSequenceID) (uint32, error) {
+// copySequence copies the chunks numbered id — a source's descriptor and the
+// track chunk beside it — and the event sequence numbered events to a new
+// sequence number in the same group, after the last of them, and returns the
+// number, the first free one after id. The copy gets a tag no other
+// sequence has.
+func (p *ProjectData) copySequence(id, events chordSequenceID) (uint32, error) {
 	if id.group != arrangeTrackGroup {
 		return 0, fmt.Errorf("sequence group %d is not the arrangement's", id.group)
 	}
-	next, last := uint32(0), -1
+	last := -1
 	tags := make(map[uint32]bool)
+	// Sequence numbers are unique across groups: a sequence in another
+	// group keeps its track chunk in this one.
+	numbers := make(map[uint32]bool)
 	for i, c := range p.Chunks {
 		cid := chunkSequenceID(c)
-		if cid.group == id.group && cid.sequence >= next && cid.sequence < 0x7fffffff {
-			next = cid.sequence + 4
-		}
+		numbers[cid.sequence] = true
 		if c.Type == "MSeq" && len(c.Data) >= sequenceTag+4 {
 			tags[binary.LittleEndian.Uint32(c.Data[sequenceTag:])] = true
 		}
-		if cid == id {
-			last = i
+		if cid == id || cid == events {
+			last = max(last, i)
 		}
 	}
 	if last < 0 {
 		return 0, errors.New("source sequence not found")
+	}
+	// The first free number after the source, as Logic fills gaps.
+	next := id.sequence + 4
+	for numbers[next] {
+		next += 4
 	}
 	tag, err := unusedTag(tags)
 	if err != nil {
@@ -108,7 +122,7 @@ func (p *ProjectData) copySequence(id chordSequenceID) (uint32, error) {
 
 	var copies []*Chunk
 	for _, c := range p.Chunks {
-		if chunkSequenceID(c) != id {
+		if cid := chunkSequenceID(c); c.Type == "EvSq" && cid != events || c.Type != "EvSq" && cid != id {
 			continue
 		}
 		copied := &Chunk{Type: c.Type, Header: c.Header, Data: bytes.Clone(c.Data)}
