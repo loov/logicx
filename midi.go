@@ -53,8 +53,9 @@ type MIDISequence struct {
 	Track string
 	// Row is the Tracks area row of the track the region is on, from 1 at
 	// the top as [ArrangeTrack.Row], or 0 when not known. It tells apart
-	// tracks that play the same channel strip, which share Track. Save
-	// ignores it; set Track to move the region.
+	// tracks that play the same channel strip, which share Track. Save moves
+	// the region to the arrange track at Row when Row changed and Track did
+	// not.
 	Row   int
 	Notes []MIDINote
 	// Controls are the region's control changes, pitch bends, pressure and
@@ -76,9 +77,12 @@ type MIDISequence struct {
 	parameters  bool
 	params      regionParams
 	trackObject uint32
-	// track is Track as decoded, and arrange the arrange tracks by name.
+	// track and row are Track and Row as decoded, arrange the arrange
+	// tracks by name and rows by row.
 	track   string
+	row     int
 	arrange map[string]arrangeTarget
+	rows    map[int]arrangeTarget
 }
 
 // Quantize is a region's quantize setting, by Logic's code for it. Grids are
@@ -197,6 +201,7 @@ func (s *MIDISequence) decodeRegion() {
 	if s.link.event != nil {
 		s.trackObject = binary.LittleEndian.Uint32(s.link.event.Data[linkTrack:])
 		s.Row = int(binary.LittleEndian.Uint16(s.link.event.Data[linkRow:]))
+		s.row = s.Row
 	}
 	data := s.descriptor.Data
 	tail, ok := sequenceTail(data)
@@ -220,7 +225,13 @@ func (s *MIDISequence) regionParams() regionParams {
 
 // assignRegionTracks names the track each region is on, and gives the
 // regions the arrange tracks they can move to.
-func assignRegionTracks(sequences []MIDISequence, audio []AudioPlacement, tracks []Track) {
+func assignRegionTracks(sequences []MIDISequence, audio []AudioPlacement, tracks []Track, rows []ArrangeTrack) {
+	byRow := make(map[int]arrangeTarget, len(rows))
+	for _, a := range rows {
+		if !a.Output {
+			byRow[a.Row] = arrangeTarget{object: a.object, row: uint16(a.Row)}
+		}
+	}
 	names := make(map[uint32]string, len(tracks))
 	arrange := make(map[string]arrangeTarget)
 	for _, t := range tracks {
@@ -237,7 +248,7 @@ func assignRegionTracks(sequences []MIDISequence, audio []AudioPlacement, tracks
 	for i := range sequences {
 		s := &sequences[i]
 		s.Track = names[s.trackObject]
-		s.track, s.arrange = s.Track, arrange
+		s.track, s.arrange, s.rows = s.Track, arrange, byRow
 	}
 	for i := range audio {
 		a := &audio[i]
@@ -1728,6 +1739,16 @@ func (s *MIDISequence) Save() error {
 	if err != nil {
 		return err
 	}
+	if target == nil && s.Row != s.row {
+		row, ok := s.rows[s.Row]
+		if !ok {
+			return fmt.Errorf("logicx: region %q cannot move to row %d, which has no track", s.Name, s.Row)
+		}
+		move, target = []record.Field{record.Uint32LE(linkTrack, &row.object), record.Uint16LE(linkRow, &row.row)}, &row
+	}
+	if target != nil && (s.shared || !s.parameters) {
+		return fmt.Errorf("logicx: region %q cannot move to another track", s.Name)
+	}
 	if s.parameters {
 		tail, _ := sequenceTail(data)
 		fields = append(fields, params.descriptorFields(tail)...)
@@ -1761,7 +1782,8 @@ func (s *MIDISequence) Save() error {
 		return err
 	}
 	if target != nil {
-		s.trackObject, s.track = target.object, s.Track
+		s.trackObject, s.track, s.row = target.object, s.Track, int(target.row)
+		s.Row = s.row
 	}
 	s.linkDuration, s.position = link.duration, s.Position
 	return nil

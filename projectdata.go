@@ -94,7 +94,7 @@ func (p *ProjectData) Refresh() {
 	assignAudioUnits(p.Tracks, p.AudioUnits)
 	p.ArrangeTracks = findArrangeTrackRows(chunks, p.Tracks)
 	p.AudioPlacements = findAudioPlacements(chunks, p.AudioRegions)
-	assignRegionTracks(p.Sequences, p.AudioPlacements, p.Tracks)
+	assignRegionTracks(p.Sequences, p.AudioPlacements, p.Tracks, p.ArrangeTracks)
 }
 
 // parseChunks splits ProjectData into its chunk records. Every chunk is

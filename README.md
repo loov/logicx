@@ -135,7 +135,9 @@ boundary that touches no files.
 
 `ProjectData.MarshalBinary` writes the chunks back, byte for byte when nothing
 changed. Audio files, audio regions and environment object names can be
-rewritten with `SetAudioFile`, `SetAudioRegion` and `SetEnvironmentName`.
+rewritten with `SetAudioFile`, `SetAudioRegion` and `SetEnvironmentName`. `CopyRegion` adds a MIDI region with its own copy of
+another's source and `DeleteRegion` removes one; a project chord's group
+moves with the chord that starts it.
 
 ---
 

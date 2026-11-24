@@ -4,6 +4,7 @@ package logicx
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -20,13 +21,20 @@ import (
 // Duration runs to the next chord or the end of its region; none of them is
 // stored. SourcePosition and SourcePositionFraction are the values stored in
 // the chord's sequence, and are what Save writes. A project chord's sequence
-// is placed by a link on the global harmony track, which Save does not move.
+// is placed by a link on the global harmony track. Save moves the link to
+// Position, taking the rest of the group along, only for the chord that
+// starts its group; for every other chord it moves nothing.
+//
+// GroupDuration is set on the chord that starts a project chord's child
+// sequence: the length of that sequence, which is where its last chord ends.
+// Save writes it. It is zero for every other chord.
 type Chord struct {
 	Position               uint32
 	SourcePosition         uint32
 	PositionFraction       uint16
 	SourcePositionFraction uint16
 	Duration               uint32
+	GroupDuration          uint32
 	Name                   string
 	Pitches                []uint8
 	SequenceID             uint32
@@ -45,6 +53,19 @@ type Chord struct {
 	// a bass.
 	noBass [2]uint8
 	ref    eventRef
+	// group is set on the chord starting a project chord's group: the link
+	// placing it, the child's descriptor and what was decoded from them.
+	group *chordGroup
+}
+
+// chordGroup is where a project chord's child sequence is placed and how
+// long it is.
+type chordGroup struct {
+	link       eventRef
+	descriptor *Chunk
+	position   uint32
+	fraction   uint16
+	duration   uint32
 }
 
 // Logic's chord-link locators precede project positions by 3840 ticks even
@@ -68,6 +89,7 @@ type chordLink struct {
 	position         uint32
 	positionFraction uint16
 	sequence         uint32
+	ref              eventRef
 }
 
 // findProjectChords decodes the global chord track: every "Global Harmonies"
@@ -75,6 +97,7 @@ type chordLink struct {
 func findProjectChords(chunks []*Chunk) []Chord {
 	events := make(map[chordSequenceID]*Chunk)
 	durations := make(map[chordSequenceID]uint32)
+	descriptors := make(map[chordSequenceID]*Chunk)
 	for _, chunk := range chunks {
 		id := chunkSequenceID(chunk)
 		switch {
@@ -82,6 +105,7 @@ func findProjectChords(chunks []*Chunk) []Chord {
 			events[id] = chunk
 		case chunk.Type == "MSeq" && sequenceName(chunk.Data) == "MIDI Region":
 			durations[id] = sequenceDuration(chunk.Data)
+			descriptors[id] = chunk
 		}
 	}
 
@@ -91,8 +115,9 @@ func findProjectChords(chunks []*Chunk) []Chord {
 			continue
 		}
 		id := chunkSequenceID(chunk)
-		for _, link := range decodeChordLinks(events[id].events()) {
-			decoded := decodeChordEvents(events[chordSequenceID{id.group, link.sequence}])
+		for _, link := range decodeChordLinks(events[id]) {
+			child := chordSequenceID{id.group, link.sequence}
+			decoded := decodeChordEvents(events[child])
 			if len(decoded) == 0 || link.position > math.MaxUint32-projectChordPositionBias {
 				continue
 			}
@@ -101,7 +126,7 @@ func findProjectChords(chunks []*Chunk) []Chord {
 			// A child holds one chord, or several when the chords are grouped;
 			// the link places the first and the rest keep their spacing.
 			base := link.position + projectChordPositionBias
-			end := uint64(base) + uint64(durations[chordSequenceID{id.group, link.sequence}])
+			end := uint64(base) + uint64(durations[child])
 			shift := int64(base) - int64(decoded[0].Position)
 			for i, chord := range decoded {
 				// A re-entered chord leaves its predecessor behind at the same
@@ -116,6 +141,11 @@ func findProjectChords(chunks []*Chunk) []Chord {
 				chord.Position = uint32(position)
 				if i == 0 {
 					chord.PositionFraction = link.positionFraction
+					if d := descriptors[child]; d != nil {
+						chord.GroupDuration = durations[child]
+						chord.group = &chordGroup{link: link.ref, descriptor: d,
+							position: chord.Position, fraction: chord.PositionFraction, duration: chord.GroupDuration}
+					}
 				}
 				switch {
 				case i+1 < len(decoded):
@@ -149,13 +179,14 @@ func inferChordDurationsUntil(chords []Chord, end uint32) {
 }
 
 // decodeChordLinks decodes the locators of the global harmony track.
-func decodeChordLinks(events []*Event) []chordLink {
+func decodeChordLinks(chunk *Chunk) []chordLink {
 	var links []chordLink
-	for _, event := range events {
+	for _, event := range chunk.events() {
 		if event.Type != eventLink {
 			continue
 		}
 		if link, ok := decodeChordLink(event.Data); ok {
+			link.ref = eventRef{chunk, event}
 			links = append(links, link)
 		}
 	}
@@ -276,7 +307,9 @@ func (c *Chord) Save() error {
 		return fmt.Errorf("logicx: chord root %d, spelling %d, masks %#x/%#x out of range",
 			c.RootPitchClass, c.RootSpelling, c.IntervalMask, c.ScaleMask)
 	default:
-		c.Attributes = c.Attributes&^(0x0fff<<16|0x80) | uint32(c.ScaleMask)<<16
+		// The attributes repeat the root and its spelling.
+		c.Attributes = c.Attributes&^(0x0fff<<16|0xff00|0x80) | uint32(c.ScaleMask)<<16 |
+			uint32(c.RootSpelling)<<12 | uint32(c.RootPitchClass)<<8
 		if !c.Scale {
 			c.Attributes |= 0x80
 		}
@@ -290,6 +323,23 @@ func (c *Chord) Save() error {
 	case !c.HasBass:
 		bassSpelling, c.BassPitchClass = c.noBass[0], c.noBass[1]
 	}
+	if g := c.group; g != nil && (c.Position != g.position || c.PositionFraction != g.fraction || c.GroupDuration != g.duration) {
+		if err := g.link.check("chord group"); err != nil {
+			return err
+		}
+		if c.Position < projectChordPositionBias {
+			return fmt.Errorf("logicx: chord position %d precedes the project start", c.Position)
+		}
+		if len(g.descriptor.Data) < sequenceMetadataTail {
+			return errors.New("logicx: chord group descriptor is too short")
+		}
+		link := chordLink{position: c.Position - projectChordPositionBias, positionFraction: c.PositionFraction}
+		if err := g.link.save("chord group", record.Uint32LE(4, &link.position), record.Uint16LE(2, &link.positionFraction)); err != nil {
+			return err
+		}
+		binary.LittleEndian.PutUint32(g.descriptor.Data[len(g.descriptor.Data)-sequenceMetadataTail:], c.GroupDuration)
+		g.position, g.fraction, g.duration = c.Position, c.PositionFraction, c.GroupDuration
+	}
 	if err := c.ref.save("chord", c.fields(&bassSpelling)...); err != nil {
 		return err
 	}
@@ -297,9 +347,22 @@ func (c *Chord) Save() error {
 	return nil
 }
 
-// Delete removes c's record from the project. Removing the only chord of a
-// project chord's sequence leaves its link pointing at an empty sequence.
-func (c *Chord) Delete() error { return c.ref.delete("chord") }
+// Delete removes c's record from the project. Removing the last chord of a
+// project chord's sequence also removes the link placing that sequence,
+// leaving the sequence orphaned as Logic does; the group's link is only
+// known to the chord that starts it.
+func (c *Chord) Delete() error {
+	if err := c.ref.delete("chord"); err != nil {
+		return err
+	}
+	if c.group == nil || slices.ContainsFunc(c.ref.chunk.Events, func(e *Event) bool {
+		_, ok := decodeChordEvent(e.Data)
+		return e.Type == eventScore && ok
+	}) {
+		return nil
+	}
+	return c.group.link.delete("chord group")
+}
 
 // Duplicate inserts a copy of c's record after it and returns the copy, to be
 // changed and saved. A copied project chord joins the original's sequence, as
@@ -308,7 +371,7 @@ func (c *Chord) Duplicate() (Chord, error) {
 	ref, err := c.ref.duplicate("chord")
 	copied := *c
 	copied.Pitches, copied.Raw = slices.Clone(c.Pitches), slices.Clone(c.Raw)
-	copied.ref = ref
+	copied.ref, copied.group, copied.GroupDuration = ref, nil, 0
 	return copied, err
 }
 

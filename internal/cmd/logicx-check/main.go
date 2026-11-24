@@ -582,6 +582,67 @@ var edits = []edit{
 			return expect(len(got) == 1 && got[0].Value == 86, "controls %+v", got)
 		}, c.Delete()
 	}},
+	{"region-copy", "tracks-region-base", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// A copy of Inst 3's region a bar later on a new track playing Inst
+		// 3, with its note an octave up and a second note added.
+		if _, err := p.DuplicateArrangeTrack(&p.ArrangeTracks[2]); err != nil {
+			return nil, err
+		}
+		p.Refresh()
+		r := region(p, "Inst 3")
+		c, err := p.CopyRegion(r)
+		if err != nil {
+			return nil, err
+		}
+		c.Name, c.Position, c.Row = "Copy", r.Position+3840, r.Row+1
+		c.SourceDuration *= 2
+		n := c.Notes[0]
+		n.Pitch += 12
+		added, err := n.Duplicate()
+		if err != nil {
+			return nil, err
+		}
+		added.Pitch, added.SourcePosition = 60, added.SourcePosition+960
+		return func(p logicx.ProjectData) error {
+			if len(p.Sequences) != 2 {
+				return fmt.Errorf("regions = %d, want 2", len(p.Sequences))
+			}
+			a, b := p.Sequences[0], p.Sequences[1]
+			return expect(a.Row == 3 && len(a.Notes) == 1 && b.Name == "Copy" && b.Row == 4 && b.Position == r.Position+3840 &&
+				len(b.Notes) == 2 && b.Notes[0].Pitch == n.Pitch && b.Notes[1].Pitch == 60,
+				"regions %q row %d (%d notes), %q row %d at %d (%+v)", a.Name, a.Row, len(a.Notes), b.Name, b.Row, b.Position, b.Notes)
+		}, errors.Join(c.Save(), n.Save(), added.Save())
+	}},
+	{"region-delete", "regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		count := len(p.Sequences)
+		r := region(p, "Inst 2")
+		return func(p logicx.ProjectData) error {
+			return expect(len(p.Sequences) == count-1 && region(&p, "Inst 2") == nil, "regions = %d, want %d", len(p.Sequences), count-1)
+		}, p.DeleteRegion(r)
+	}},
+	{"chord-group", "chord-regions", func(p *logicx.ProjectData) (func(logicx.ProjectData) error, error) {
+		// The first project chord, moved a bar later, grouped with a G two
+		// beats after it, the group lasting a bar.
+		first := p.ProjectChords[0]
+		g, err := first.Duplicate()
+		if err != nil {
+			return nil, err
+		}
+		g.SourcePosition += 1920
+		g.RootPitchClass, g.RootSpelling = 7, 2
+		first.Position += 3840
+		first.GroupDuration = 3840
+		return func(p logicx.ProjectData) error {
+			var group []logicx.Chord
+			for _, c := range p.ProjectChords {
+				if c.SequenceID == first.SequenceID {
+					group = append(group, c)
+				}
+			}
+			return expect(len(group) == 2 && group[0].Position == first.Position && group[1].Position == first.Position+1920 &&
+				group[1].Name == "G" && group[1].Duration == 1920, "group %+v", group)
+		}, errors.Join(g.Save(), first.Save())
+	}},
 }
 
 // controls lists every control message in p's regions, in region order.
