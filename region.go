@@ -144,6 +144,9 @@ func (p *ProjectData) copySequence(id, events chordSequenceID) (uint32, error) {
 		copies = append(copies, copied)
 	}
 	p.Chunks = slices.Insert(p.Chunks, last+1, copies...)
+	if err := p.registerObject(chordSequenceID{id.group, next}); err != nil {
+		return 0, err
+	}
 	return next, nil
 }
 

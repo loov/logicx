@@ -132,10 +132,96 @@ func TestProjectData_AddTrackMakesAStrip(t *testing.T) {
 			}
 		}
 	}
+	var list []byte
+	for _, c := range got.Chunks {
+		if c.Type == stripListChunk && chunkSequenceID(c) == (chordSequenceID{channelStripGroup, channelStripSequence}) {
+			list = c.Data
+		}
+	}
+	strips := 0
+	for _, c := range got.Chunks {
+		if isChannelStrip(c) && c.Data[channelStripKind] != 0xff {
+			strips++
+		}
+	}
+	if total := int(binary.LittleEndian.Uint16(list[stripListTotal:])); total != strips || len(list) < 4*total ||
+		binary.LittleEndian.Uint16(list[stripListKinds+2*instrumentKindCode:]) != 4 {
+		t.Errorf("strip list counts %d strips, %d instrument strips; want %d, 4", total, binary.LittleEndian.Uint16(list[stripListKinds+6:]), strips)
+	}
 	if len(got.AudioUnits) <= units {
 		t.Errorf("plug-ins %d, want more than %d", len(got.AudioUnits), units)
 	}
 	if a := got.ArrangeTracks[added.Row-1]; a.Track != "Inst 3" || a.chunk.Data[arrangeTrackSelectedAlso]&0x40 == 0 {
 		t.Errorf("arrange track %+v", a)
+	}
+}
+
+// Logic 13 keeps a link in the selected track's environment object, which a
+// copy must not share.
+func TestProjectData_AddTrackClearsLink(t *testing.T) {
+	p := parseFixtureProject(t, "chord-regions.logicx")
+	source := trackNamed(t, &p, "Inst 2")
+	at := environmentNameLength + 2 + len("Deluxe Classic")
+	at += at&1 + environmentLink
+	copy(source.environment.Data[at:], []byte{0xba, 0x30, 0x71, 0x3d})
+	added, err := p.AddTrack(source, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reparse(t, &p)
+	if d := trackNamed(t, &got, added.Track).environment.Data; !allZero(d[at : at+4]) {
+		t.Errorf("link copied: %x", d[at:at+4])
+	}
+}
+
+// A new track's environment object, and a copied region's sequence, get a
+// UUID and a change time in the song's object tables, or Logic leaves the
+// track out of the mixer.
+func TestProjectData_AddTrackRegistersObjects(t *testing.T) {
+	p := parseFixtureProject(t, "regions.logicx")
+	added, err := p.AddTrack(trackNamed(t, &p, "Inst 6"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, err := p.CopyRegion(regionOn(t, &p, "Inst 1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reparse(t, &p)
+	var song []byte
+	for _, c := range got.Chunks {
+		if c.Type == songChunk {
+			song = c.Data
+		}
+	}
+	for _, id := range []chordSequenceID{{environmentGroup, added.object}, {arrangeTrackGroup, copied.SequenceID}} {
+		key := binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(nil, id.group), id.sequence)
+		uuids := bytes.Index(song, key)
+		times := bytes.Index(song[uuids+8:], key) + uuids + 8
+		if uuids < 16 || times < uuids+8 || allZero(song[uuids-16:uuids]) || allZero(song[times-8:times]) {
+			t.Errorf("object %v not registered: UUID at %d, time at %d", id, uuids, times)
+			continue
+		}
+		if stamp := binary.LittleEndian.Uint64(song[times-8:]); song[uuids-10]>>4 != 1 || stamp < uuidTime()-1e9 {
+			t.Errorf("object %v: UUID %x, time %x", id, song[uuids-16:uuids], stamp)
+		}
+	}
+}
+
+// Logic 13 takes a strip with a random ID for one without a track; a new
+// strip's ID, like Logic's own, is time-based.
+func TestProjectData_AddTrackTimeBasedIDs(t *testing.T) {
+	p := parseFixtureProject(t, "chord-regions.logicx")
+	added, err := p.AddTrack(trackNamed(t, &p, "Inst 2"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reparse(t, &p)
+	track := trackNamed(t, &got, added.Track)
+	d := track.chunk.Data
+	own := d[len(d)-3*routeIDSize : len(d)-2*routeIDSize]
+	env := track.environment.Data[len(track.environment.Data)-16:]
+	if own[6]>>4 != 1 || !bytes.Equal(own, env) {
+		t.Errorf("strip ID %x, environment ID %x; want one time-based ID", own, env)
 	}
 }

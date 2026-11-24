@@ -5,7 +5,6 @@ package logicx
 import (
 	"bytes"
 	"cmp"
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -104,8 +103,7 @@ func (p *ProjectData) DuplicateArrangeTrack(a *ArrangeTrack) (ArrangeTrack, erro
 	chunk.Data[arrangeTrackSelected] &^= 0x20
 	chunk.Data[arrangeTrackSelectedAlso] &^= 0x40
 	id := chunk.Data[arrangeTrackID : arrangeTrackID+16]
-	rand.Read(id)
-	id[6], id[8] = id[6]&0x0f|0x40, id[8]&0x3f|0x80
+	copy(id, newUUID())
 
 	p.shiftRows(traks, a.Row+1, 1)
 	binary.LittleEndian.PutUint32(chunk.Header[arrangeTrackIndex:], uint32(a.Row))

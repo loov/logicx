@@ -4,7 +4,6 @@ package logicx
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -32,8 +31,8 @@ const (
 	environmentSelected = 0x50 // 0x01
 	environmentKind     = 0x51
 	environmentY        = 0x52
-	environmentStep   = 0x40
-	environmentGroup  = 0x14
+	environmentStep     = 0x40
+	environmentGroup    = 0x14
 )
 
 // AddTrack adds a track below source's playing a channel strip of its own, a
@@ -101,6 +100,9 @@ func (p *ProjectData) AddTrack(source *Track, name string) (ArrangeTrack, error)
 	}
 	copy(env.Data[len(env.Data)-16:], id)
 	env.Data[environmentSelected] &^= 0x01
+	if err := clearEnvironmentLink(env.Data); err != nil {
+		return ArrangeTrack{}, err
+	}
 	if err := setEnvironmentStrip(env.Data, spare.strip); err != nil {
 		return ArrangeTrack{}, err
 	}
@@ -141,6 +143,9 @@ func (p *ProjectData) AddTrack(source *Track, name string) (ArrangeTrack, error)
 		}
 	}
 	p.Chunks = slices.Insert(p.Chunks, last+1, env)
+	if err := p.registerObject(chordSequenceID{environmentGroup, object}); err != nil {
+		return ArrangeTrack{}, err
+	}
 	return added, nil
 }
 
@@ -179,6 +184,9 @@ func (p *ProjectData) insertSpareStrip() (*Track, error) {
 	}
 	at := binary.LittleEndian.Uint16(click.Header[14:])
 	index := binary.LittleEndian.Uint16(click.Data[channelStripIndex:])
+	if err := p.countStrip(); err != nil {
+		return nil, err
+	}
 
 	for _, c := range p.Chunks {
 		if (isChannelStrip(c) || c.Type == pluginChunk && bytes.Equal(c.Header[4:8], pluginVariant)) &&
@@ -205,6 +213,44 @@ func (p *ProjectData) insertSpareStrip() (*Track, error) {
 	clear(spare.Data[len(spare.Data)-3*routeIDSize : len(spare.Data)-2*routeIDSize])
 	p.Chunks = slices.Insert(p.Chunks, slices.Index(p.Chunks, click), spare)
 	return &Track{chunk: spare, strip: at, Name: fmt.Sprintf("Inst %d", index+1)}, nil
+}
+
+// The strip list chunk counts the strips: all of them, and those of each
+// kind, by kind code from stripListKinds. It ends with an entry for each
+// strip, stripListEntry.
+const (
+	channelStripGroup    = 0x0e
+	channelStripSequence = 0x24
+	instrumentKindCode   = 3 // TrackKindInstrument's code; see trackKinds
+
+	stripListChunk = "AuCn"
+	stripListTotal = 26
+	stripListKinds = 28
+)
+
+var stripListEntry = []byte{1, 0, 0, 0}
+
+// countStrip adds an instrument strip to the strip list's counts.
+func (p *ProjectData) countStrip() error {
+	for _, c := range p.Chunks {
+		if c.Type != stripListChunk || chunkSequenceID(c) != (chordSequenceID{channelStripGroup, channelStripSequence}) {
+			continue
+		}
+		d := c.Data
+		kind := stripListKinds + 2*instrumentKindCode
+		if len(d) < kind+2 {
+			break
+		}
+		total := int(binary.LittleEndian.Uint16(d[stripListTotal:]))
+		if len(d) < stripListKinds+4*total || !bytes.Equal(d[len(d)-4*total:], bytes.Repeat(stripListEntry, total)) {
+			return errors.New("logicx: strip list does not end with an entry for each strip")
+		}
+		binary.LittleEndian.PutUint16(d[stripListTotal:], uint16(total+1))
+		binary.LittleEndian.PutUint16(d[kind:], binary.LittleEndian.Uint16(d[kind:])+1)
+		c.Data = append(d, stripListEntry...)
+		return nil
+	}
+	return errors.New("logicx: no strip list")
 }
 
 // setInstrumentIndex sets an instrument strip's index and the name Logic
@@ -260,6 +306,27 @@ func setEnvironmentStrip(data []byte, strip uint16) error {
 	return nil
 }
 
+// environmentLink is where, counted from the strip an environment object
+// names, Logic 13 keeps a value it shares between the selected track's
+// object and the Stereo Out's; any other object holds zero. A track whose
+// object holds it as well is left out of the mixer.
+const environmentLink = 218
+
+// clearEnvironmentLink zeroes an environment object's environmentLink.
+func clearEnvironmentLink(data []byte) error {
+	var name string
+	if !record.Decode(data, record.String16(environmentNameLength, &name)) {
+		return errors.New("logicx: environment object has no name")
+	}
+	at := environmentNameLength + 2 + len(name)
+	at += at&1 + environmentLink
+	if at+4 > len(data) {
+		return errors.New("logicx: environment object too short")
+	}
+	clear(data[at : at+4])
+	return nil
+}
+
 // renameEnvironment returns an environment object renamed, keeping what
 // follows the name at the next even offset.
 func renameEnvironment(data []byte, name string) ([]byte, error) {
@@ -280,12 +347,11 @@ func renameEnvironment(data []byte, name string) ([]byte, error) {
 	return append(out, data[aligned(len(old)):]...), nil
 }
 
-// newUUID returns a random version 4 UUID.
+// newUUID returns a new time-based UUID, as Logic gives every object it
+// makes. Logic 13 does not take a strip with a random (version 4) ID for one
+// in use: its track shows no mixer controls and the strip no fader.
 func newUUID() []byte {
-	id := make([]byte, 16)
-	rand.Read(id)
-	id[6], id[8] = id[6]&0x0f|0x40, id[8]&0x3f|0x80
-	return id
+	return timeUUID(uuidTime())
 }
 
 // renewPluginID gives a plug-in chunk a new instance ID. Logic ends the

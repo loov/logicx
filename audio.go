@@ -4,7 +4,6 @@ package logicx
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -231,8 +230,7 @@ func (p *ProjectData) DuplicateAudioRegion(r *AudioRegion) (AudioRegion, error) 
 	chunk := &Chunk{Type: r.chunk.Type, Header: r.chunk.Header, Data: bytes.Clone(r.chunk.Data)}
 	binary.LittleEndian.PutUint32(chunk.Header[audioRegionNumber:], number)
 	uuid := chunk.Data[len(chunk.Data)-audioRegionTail+audioRegionUUID:][:16]
-	rand.Read(uuid)
-	uuid[6], uuid[8] = uuid[6]&0x0f|0x40, uuid[8]&0x3f|0x80
+	copy(uuid, newUUID())
 	binary.LittleEndian.PutUint32(count, number+1)
 	p.Chunks = slices.Insert(p.Chunks, at+1, chunk)
 	copied := *r
